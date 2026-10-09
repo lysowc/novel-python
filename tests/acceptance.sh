@@ -3,7 +3,7 @@
 # 用法: bash test/acceptance.sh [BASE_URL]
 set -u
 
-BASE="${1:-http://127.0.0.1:8787}"
+BASE="${1:-http://127.0.0.1:8800}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
 COOKIE=$(mktemp)

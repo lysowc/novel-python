@@ -1,7 +1,7 @@
 """AI 任务消费进程（独立进程，阻塞式消费 Redis 队列）
 
 启动方式：
-    /Users/sora/uv/novel-python/bin/python -m app.worker
+    .venv/bin/python -m app.worker
 """
 import sys
 import time

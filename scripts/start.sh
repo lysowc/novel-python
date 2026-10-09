@@ -5,7 +5,14 @@
 #       PORT=8800 bash scripts/start.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PY="${PYTHON:-/Users/sora/uv/novel-python/bin/python}"
+# Python 解释器：优先 $PYTHON 环境变量，其次项目内 .venv，最后系统 python3
+if [ -n "${PYTHON:-}" ]; then
+  PY="$PYTHON"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+else
+  PY="python3"
+fi
 PORT="${PORT:-8800}"
 MOCK_PORT="${MOCK_PORT:-8899}"
 LOG_DIR="${ROOT}/runtime"

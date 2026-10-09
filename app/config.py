@@ -1,5 +1,11 @@
 """应用配置：.env → pydantic-settings"""
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 项目根目录（static 等相对路径的基准）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -32,8 +38,8 @@ class Settings(BaseSettings):
     ai_http_timeout: int = 120
     ai_temperature: float = 0.8
 
-    # 前端静态资源目录（默认指向 Vue 构建产物，可改为本项目 static/）
-    static_dir: str = "/Users/sora/php/webman/public"
+    # 前端静态资源目录（默认本项目 static/，Vue 构建产物；可用绝对路径覆盖）
+    static_dir: str = "static"
 
     # 开发跨域（vite dev 5173 直连时用；走代理则不需要）
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

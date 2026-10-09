@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import AuthError, require_admin
-from app.config import settings
+from app.config import PROJECT_ROOT, settings
 from app.routers import admin, ai_tasks, front
 
 app = FastAPI(title="AI 小说工坊", docs_url=None, redoc_url=None)
@@ -47,7 +47,8 @@ app.include_router(ai_tasks.router, dependencies=[Depends(require_admin)])
 
 # ============ SPA 静态资源与兜底 ============
 
-_static_dir = os.path.abspath(settings.static_dir)
+_static_dir = os.path.abspath(settings.static_dir) if os.path.isabs(settings.static_dir) \
+    else str(PROJECT_ROOT / settings.static_dir)
 if os.path.isdir(_static_dir):
     assets_dir = os.path.join(_static_dir, "assets")
     if os.path.isdir(assets_dir):

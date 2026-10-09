@@ -1,7 +1,7 @@
 """Mock OpenAI-Compatible 服务（仅用于本地开发/联调测试）
 
 用法:
-    /Users/sora/uv/novel-python/bin/uvicorn tests.mock_ai_server:app --port 8899
+    .venv/bin/uvicorn tests.mock_ai_server:app --port 8899
 """
 import json
 import time
