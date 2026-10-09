@@ -34,8 +34,11 @@ def recover_stuck_tasks() -> None:
 
 
 def main() -> None:
+    # --recover：只做一次卡死任务恢复后退出（由 scripts/start.sh 在启动多进程前调用）
+    if "--recover" in sys.argv:
+        recover_stuck_tasks()
+        return
     print("[worker] AI 任务消费进程已启动，队列:", QUEUE_KEY)
-    recover_stuck_tasks()
     while True:
         task_id = None
         try:

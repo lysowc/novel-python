@@ -190,5 +190,32 @@ def execute(task_id: int) -> None:
                 task.updated_at = now()
                 db.commit()
             finish(task_id, "failed", message)
+
+        # 连续续写：无论成功失败都续链下一章（跳过失败章，坏章可重试/重新生成）
+        try:
+            _continue_chain(db, task)
+        except Exception:
+            pass
     finally:
         db.close()
+
+
+def _continue_chain(db: Session, task: AiTask) -> None:
+    """连续续写续链：remaining > 0 时入队下一章（成功/失败都继续）"""
+    if task.task_type != "continue_chapter":
+        return
+    params = task.params or {}
+    remaining = int(params.get("remaining") or 0)
+    if remaining <= 0:
+        return
+    next_params: dict = {"remaining": remaining - 1}
+    if params.get("target_words"):
+        next_params["target_words"] = int(params["target_words"])
+    if params.get("instruction"):
+        next_params["instruction"] = str(params["instruction"])
+    enqueue(db, "continue_chapter", task.ref_id, next_params)
+    publish(task.id, {
+        "type": "status",
+        "stage": "auto_continue",
+        "message": f"本{task.task_type}结束，已自动安排下一章（剩余 {remaining - 1} 章）",
+    })

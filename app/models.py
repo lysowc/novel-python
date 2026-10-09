@@ -231,6 +231,7 @@ class AiLog(Base):
     provider = Column(String(64), nullable=False, default="")
     model = Column(String(128), nullable=False, default="")
     task_type = Column(String(64), nullable=False, default="")
+    prompt = Column(Text, nullable=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)

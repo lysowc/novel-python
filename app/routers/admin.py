@@ -98,9 +98,10 @@ def f_task(t: AiTask) -> dict:
 def f_log(l: AiLog) -> dict:
     return {
         "id": l.id, "provider": l.provider, "model": l.model, "task_type": l.task_type,
-        "prompt_tokens": l.prompt_tokens, "completion_tokens": l.completion_tokens,
-        "total_tokens": l.total_tokens, "duration": l.duration, "status": l.status,
-        "error_message": l.error_message, "created_at": dt_str(l.created_at),
+        "prompt": l.prompt, "prompt_tokens": l.prompt_tokens,
+        "completion_tokens": l.completion_tokens, "total_tokens": l.total_tokens,
+        "duration": l.duration, "status": l.status, "error_message": l.error_message,
+        "created_at": dt_str(l.created_at),
     }
 
 

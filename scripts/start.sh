@@ -32,16 +32,25 @@ else
   echo "✔ API 已启动: http://127.0.0.1:${PORT}（日志 runtime/api.log）"
 fi
 
-# 2. AI 任务消费进程（必须，否则生成/审校任务不会执行）
-if alive worker; then
-  echo "⚠ worker 已在运行（pid $(cat "${LOG_DIR}/worker.pid")）"
-else
-  nohup "${PY}" -m app.worker >> "${LOG_DIR}/worker.log" 2>&1 &
-  echo $! > "${LOG_DIR}/worker.pid"
-  echo "✔ AI 任务 worker 已启动（日志 runtime/worker.log）"
-fi
+# 2. 恢复卡死任务（只跑一次，避免多 worker 启动时互相误判）
+"${PY}" -m app.worker --recover
 
-# 3. Mock AI（本地无 API Key 联调用；接真实 AI 后可用 MOCK=0 跳过）
+# 3. AI 任务消费进程（多进程并行；同一本小说仍串行，不同小说可并行）
+WORKERS="${WORKERS:-3}"
+RUNNING_WORKERS=0
+for i in $(seq 1 "${WORKERS}"); do
+  if alive "worker.${i}"; then
+    echo "⚠ worker ${i} 已在运行（pid $(cat "${LOG_DIR}/worker.${i}.pid")）"
+    RUNNING_WORKERS=$((RUNNING_WORKERS + 1))
+  else
+    nohup "${PY}" -m app.worker >> "${LOG_DIR}/worker.log" 2>&1 &
+    echo $! > "${LOG_DIR}/worker.${i}.pid"
+    RUNNING_WORKERS=$((RUNNING_WORKERS + 1))
+  fi
+done
+echo "✔ AI 任务 worker 已启动 ×${RUNNING_WORKERS}（日志 runtime/worker.log，可用 WORKERS=N 调整进程数）"
+
+# 4. Mock AI（本地无 API Key 联调用；接真实 AI 后可用 MOCK=0 跳过）
 if [ "${MOCK:-1}" = "1" ]; then
   if alive mock; then
     echo "⚠ mock 已在运行（pid $(cat "${LOG_DIR}/mock.pid")）"

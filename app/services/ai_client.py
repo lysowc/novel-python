@@ -50,11 +50,12 @@ def endpoint(provider: AiProvider) -> str:
 
 
 def log_call(db: Session, task_type: str, provider: AiProvider, model: AiModel,
-             usage: dict, duration_ms: int, status: str, error: str = "") -> None:
+             usage: dict, duration_ms: int, status: str, error: str = "", prompt: str = "") -> None:
     row = AiLog(
         provider=provider.name,
         model=model.name,
         task_type=task_type,
+        prompt=prompt,
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
         total_tokens=int(usage.get("total_tokens") or 0),
@@ -72,6 +73,13 @@ def _headers(provider: AiProvider) -> dict:
     if provider.api_key:
         headers["Authorization"] = "Bearer " + provider.api_key
     return headers
+
+
+def _system_prompt(messages: list[dict]) -> str:
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "system":
+            return str(m.get("content", ""))
+    return ""
 
 
 class AiClient:
@@ -108,6 +116,7 @@ class AiClient:
         options = options or {}
         provider, model = self._resolve()
         task_type = str(options.get("task_type", "chat"))
+        prompt = _system_prompt(messages)
         timeout = int(options.get("timeout") or 0) or int(
             float(config_value(self.db, "ai_http_timeout", settings.ai_http_timeout))
         )
@@ -119,7 +128,7 @@ class AiClient:
                 resp = client.post(endpoint(provider), json=payload, headers=_headers(provider))
         except Exception as e:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e))
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt)
             raise RuntimeError(f"AI 请求失败: {e}") from e
         duration = int((time.time() - start) * 1000)
 
@@ -130,12 +139,12 @@ class AiClient:
         if resp.status_code != 200 or not isinstance(body, dict) or "choices" not in body:
             err = (body or {}).get("error", {}).get("message", "") if isinstance(body, dict) else ""
             err = err or f"HTTP {resp.status_code}"
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err))
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt)
             raise RuntimeError(f"AI 调用失败: {err}")
 
         text = str(body["choices"][0]["message"]["content"])
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-        log_call(self.db, task_type, provider, model, usage, duration, "success")
+        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt)
         return {
             "text": text,
             "usage": usage,
@@ -150,6 +159,7 @@ class AiClient:
         options = options or {}
         provider, model = self._resolve()
         task_type = str(options.get("task_type", "chat"))
+        prompt = _system_prompt(messages)
 
         payload = self._build_payload(messages, model, options, stream=True)
         start = time.time()
@@ -167,7 +177,7 @@ class AiClient:
                             err = str(body.get("error", {}).get("message", err))
                     except (ValueError, UnicodeDecodeError):
                         pass
-                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err)
+                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt)
                     raise RuntimeError(f"AI 调用失败: {err}")
 
                 on_stage and on_stage("stream_start")
@@ -210,10 +220,10 @@ class AiClient:
 
                 if text == "" and read_error:
                     log_call(self.db, task_type, provider, model, usage, duration,
-                             "failed", "流式读取中断: " + read_error)
+                             "failed", "流式读取中断: " + read_error, prompt)
                     raise RuntimeError(f"AI 流式输出中断: {read_error}")
 
-                log_call(self.db, task_type, provider, model, usage, duration, "success")
+                log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt)
                 return {
                     "text": text,
                     "usage": usage,
@@ -225,5 +235,5 @@ class AiClient:
             raise
         except Exception as e:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e))
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt)
             raise RuntimeError(f"AI 请求失败: {e}") from e
