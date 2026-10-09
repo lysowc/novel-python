@@ -142,9 +142,8 @@ class AiService:
                 raise RuntimeError(f"第{chapter_no}章不存在")
         else:
             max_no = (
-                self.db.query(Chapter.chapter_no)
+                self.db.query(func.max(Chapter.chapter_no))
                 .filter(Chapter.novel_id == novel.id)
-                .order_by(Chapter.chapter_no.desc())
                 .scalar()
             )
             chapter_no = int(max_no or 0) + 1
