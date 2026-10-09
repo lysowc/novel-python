@@ -7,7 +7,7 @@ const outDir = process.argv[2] || '/tmp/webman-shots'
 mkdirSync(outDir, { recursive: true })
 
 const exe = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const BASE = 'http://127.0.0.1:8787'
+const BASE = 'http://127.0.0.1:8800'
 const viewport = { width: 1440, height: 900 }
 
 const browser = await chromium.launch({ executablePath: exe, headless: true })

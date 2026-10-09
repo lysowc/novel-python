@@ -3,7 +3,7 @@
 import { chromium } from 'playwright-core'
 
 const exe = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const BASE = 'http://127.0.0.1:8787'
+const BASE = 'http://127.0.0.1:8800'
 
 const browser = await chromium.launch({ executablePath: exe, headless: true })
 
