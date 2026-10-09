@@ -227,6 +227,21 @@ class AiService:
             except Exception as e:
                 on_stage and on_stage("consistency_queued", "自动审校入队失败：" + str(e))
 
+        # 7. 连续生成：remaining > 0 时自动入队下一章（逐章排队，不占用当前任务）
+        remaining = int((task.params or {}).get("remaining") or 0)
+        if remaining > 0:
+            next_params = {"remaining": remaining - 1, "target_words": target_words}
+            if instruction:
+                next_params["instruction"] = instruction
+            try:
+                task_service.enqueue(self.db, "continue_chapter", novel.id, next_params)
+                on_stage and on_stage(
+                    "auto_continue",
+                    f"第{chapter_no}章完成，已自动安排第{chapter_no + 1}章（剩余 {remaining - 1} 章）",
+                )
+            except Exception as e:
+                on_stage and on_stage("auto_continue", "自动续写入队失败：" + str(e))
+
         return chapter
 
     def generate_summary_for_chapter(self, novel: Novel, task, on_stage=None) -> None:

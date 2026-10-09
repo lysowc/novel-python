@@ -14,7 +14,7 @@ from app.services import task_service
 
 router = APIRouter(prefix="/api/admin/ai/tasks", tags=["ai-tasks"])
 
-PARAMS_ALLOWED = {"chapter_no", "target_words", "instruction"}
+PARAMS_ALLOWED = {"chapter_no", "target_words", "instruction", "remaining"}
 
 
 @router.get("")
