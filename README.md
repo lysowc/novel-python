@@ -13,6 +13,9 @@ AI 小说工坊的 **Python 3.12 + FastAPI** 后端 + 自带前端（Vue 3 + Tai
   - **检索式上下文**：jieba + BM25，生成每章前按相关性召回已被滚动窗口丢弃的历史章节（`app/services/retrieval.py`）
   - **结构化记忆 v2**：8 个记忆槽（剧情状态/人物/伏笔 open-resolved/世界观/时间线…），旧格式自动迁移（`app/services/memory.py`）
   - **一致性审校**：`consistency_check` 任务 + 报告落库 + 每 N 章自动触发
+- **连续续写**：章节页「连续续写 N 章」逐章排队；中途某章失败**跳过继续**，坏章可重新生成/重试
+- **多进程 worker**：默认 3 个进程并行（同一本小说串行、不同小说并行），`WORKERS=N` 调整；启动时自动恢复卡死任务
+- **AI 日志记录 Prompt**：每次调用把实际使用的 system prompt 写入日志（`ai_log.prompt`），后台「AI 日志」可查看
 
 ## 环境要求
 
@@ -65,6 +68,7 @@ bash scripts/stop.sh
 bash scripts/start.sh                  # API(8800) + worker + mock AI(8899)
 MOCK=0 bash scripts/start.sh           # 不启动 mock（已接真实 AI）
 PORT=8800 bash scripts/start.sh        # 自定义端口
+WORKERS=5 bash scripts/start.sh        # 自定义 AI worker 进程数（默认 3）
 
 bash scripts/stop.sh                   # 全部停止
 ```
