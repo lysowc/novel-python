@@ -656,17 +656,23 @@ def idea_chat(iid: int, payload: dict, db: Session = Depends(get_db)):
             thread.start()
 
             full = ""
+            error_msg = None
             while True:
                 kind, payload = q.get()
                 if kind == "delta":
                     full += payload
                     yield "data: " + json_dumps({"type": "delta", "content": payload}) + "\n\n"
                 elif kind == "error":
-                    yield "data: " + json_dumps({"type": "error", "msg": payload}) + "\n\n"
+                    error_msg = payload
                     break
                 else:
                     break
             thread.join()
+
+            # 出错时只发 error，不再发 done（避免前端把错误状态冲掉）
+            if error_msg is not None:
+                yield "data: " + json_dumps({"type": "error", "msg": error_msg}) + "\n\n"
+                return
 
             full = full.strip()
             if full:
