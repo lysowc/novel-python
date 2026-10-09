@@ -79,27 +79,25 @@ def stream(task_id: int, db: Session = Depends(get_db)):
             }) + "\n\n"
             return
 
+        # 用游标 + lrange 读取（不消费），这样断开重连后能回放已生成的全部内容
         started_at = time.time()
         last_event_at = started_at
+        cursor = 0
         while True:
             events = []
             try:
                 r = connect_redis()
                 try:
-                    while True:
-                        raw = r.rpop(STREAM_PREFIX + str(task_id))
-                        if raw is None:
-                            break
-                        events.append(raw)
-                        if len(events) >= 300:
-                            break
+                    # lpush 是头插，lrange(0,-1) 是最新在前，反转成时间正序
+                    events = list(reversed(r.lrange(STREAM_PREFIX + str(task_id), 0, -1)))
                 finally:
                     r.close()
             except Exception:
                 pass  # 连接失败下轮重试
 
             done = False
-            for raw in events:
+            for raw in events[cursor:]:
+                cursor += 1
                 try:
                     event = json.loads(raw)
                 except ValueError:
@@ -108,6 +106,7 @@ def stream(task_id: int, db: Session = Depends(get_db)):
                 last_event_at = time.time()
                 if event.get("type") == "done":
                     done = True
+                    break
             if done:
                 break
 
