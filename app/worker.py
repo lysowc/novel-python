@@ -9,8 +9,33 @@ import time
 from app.services.task_service import QUEUE_KEY, connect_redis, execute
 
 
+def recover_stuck_tasks() -> None:
+    """启动时恢复：把残留的 running 任务标记为 failed。
+
+    进程被 kill/重启时，正在执行的任务会永久卡在 running；重启后没有任何任务
+    真正在执行，因此把所有 running 都视为已中断，改为 failed 供用户重试。
+    """
+    from app.db import SessionLocal
+    from app.helpers import now
+    from app.models import AiTask
+
+    db = SessionLocal()
+    try:
+        stuck = db.query(AiTask).filter(AiTask.status == "running").all()
+        for task in stuck:
+            task.status = "failed"
+            task.error_message = "任务进程重启，执行被中断（可重试）"
+            task.updated_at = now()
+        if stuck:
+            db.commit()
+            print(f"[worker] 已将 {len(stuck)} 个中断任务恢复为 failed（可重试）")
+    finally:
+        db.close()
+
+
 def main() -> None:
     print("[worker] AI 任务消费进程已启动，队列:", QUEUE_KEY)
+    recover_stuck_tasks()
     while True:
         task_id = None
         try:
