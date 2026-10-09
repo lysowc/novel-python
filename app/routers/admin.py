@@ -51,6 +51,12 @@ def f_chapter(c: Chapter) -> dict:
     }
 
 
+def f_chapter_full(c: Chapter) -> dict:
+    data = f_chapter(c)
+    data["content"] = c.content
+    return data
+
+
 def f_idea(i: Idea) -> dict:
     return {
         "id": i.id, "category_id": i.category_id,
@@ -475,6 +481,14 @@ def _recount_novel(db: Session, n: Novel) -> None:
 
 
 # ============ 章节 ============
+
+@router.get("/chapters/{cid}")
+def chapter_show(cid: int, db: Session = Depends(get_db)):
+    c = db.query(Chapter).filter(Chapter.id == cid).first()
+    if not c:
+        return fail("章节不存在")
+    return ok(f_chapter_full(c))
+
 
 @router.put("/chapters/{cid}")
 def chapter_update(cid: int, payload: dict, db: Session = Depends(get_db)):
