@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
-static/
 runtime/
 .DS_Store
+# 前端构建产物随仓库提交（static/），保证线上 clone 即可运行
+# 改前端源码后记得 pnpm build 并提交 static/ 的变更

@@ -114,6 +114,13 @@ pnpm build            # 构建产物直接输出到 ../static/（vite 已配置�
 bash tests/acceptance.sh http://127.0.0.1:8800
 ```
 
+## 线上部署
+
+- **前端构建产物（`static/`）已随仓库提交**：clone 后无需 Node/pnpm，装好 Python 依赖、初始化数据库、`bash scripts/start.sh` 即可访问完整页面
+- 如果修改了前端源码：`cd web && pnpm install && pnpm build`，然后把 `static/` 的变更一并提交
+- 后端启动方式与本地一致（`.env` 配好线上数据库/Redis，`SESSION_SECRET` 换随机值）
+- 常见报错 `Failed to load module script ... MIME type "text/html"`：说明服务器上的 `static/` 缺失或过期，拉最新代码（或重新构建提交）即可；后端已对 `/assets/*` 缺失返回显式 404，不会再拿 HTML 冒充 JS
+
 ## 常见问题
 
 - **端口 8800 被占**：`PORT=8801 bash scripts/start.sh`（改端口后验收脚本、web/vite.config.ts 代理要同步改）

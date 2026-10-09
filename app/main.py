@@ -68,6 +68,9 @@ if os.path.isdir(_static_dir):
 def spa_fallback(full_path: str, request: Request):
     if full_path == "api" or full_path.startswith("api/"):
         return JSONResponse(status_code=200, content={"code": 404, "msg": "接口不存在", "data": None})
+    # 静态资源缺失时显式 404，绝不把 index.html 当 JS 返回（避免浏览器 MIME 校验报错掩盖真实问题）
+    if full_path.startswith("assets/"):
+        return JSONResponse(status_code=404, content={"code": 404, "msg": "静态资源不存在", "data": None})
     index_file = os.path.join(_static_dir, "index.html")
     if os.path.isfile(index_file):
         with open(index_file, "r", encoding="utf-8") as f:
