@@ -154,8 +154,8 @@ class AiClient:
         payload = self._build_payload(messages, model, options, stream=True)
         start = time.time()
         try:
-            # 流式：不设总超时，只设连接超时（长时间生成）
-            client = httpx.Client(timeout=httpx.Timeout(None, connect=20))
+            # 流式：不设总超时，但设连接超时 + 读超时（长时间生成，但防止流挂起永久卡住 worker）
+            client = httpx.Client(timeout=httpx.Timeout(None, connect=20, read=300))
             with client.stream("POST", endpoint(provider), json=payload, headers=_headers(provider)) as resp:
                 duration = int((time.time() - start) * 1000)
                 if resp.status_code != 200:
