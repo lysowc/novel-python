@@ -130,7 +130,7 @@ class AiService:
         params = task.params or {}
         type_ = task.task_type
 
-        if type_ in ("generate_chapter", "regenerate_chapter"):
+        if type_ == "regenerate_chapter":
             chapter_no = int(params.get("chapter_no") or 0)
             if chapter_no <= 0:
                 raise RuntimeError("缺少 chapter_no 参数")
@@ -138,15 +138,18 @@ class AiService:
                 self.db.query(Chapter).filter(
                     Chapter.novel_id == novel.id, Chapter.chapter_no == chapter_no).first()
             )
-            if type_ == "regenerate_chapter" and not exists:
+            if not exists:
                 raise RuntimeError(f"第{chapter_no}章不存在")
         else:
-            max_no = (
-                self.db.query(func.max(Chapter.chapter_no))
-                .filter(Chapter.novel_id == novel.id)
-                .scalar()
-            )
-            chapter_no = int(max_no or 0) + 1
+            # generate_chapter / continue_chapter：未指定章号时默认生成下一章
+            chapter_no = int(params.get("chapter_no") or 0)
+            if chapter_no <= 0:
+                max_no = (
+                    self.db.query(func.max(Chapter.chapter_no))
+                    .filter(Chapter.novel_id == novel.id)
+                    .scalar()
+                )
+                chapter_no = int(max_no or 0) + 1
 
         target_words = int(params.get("target_words") or 0) or int(
             float(config_value(self.db, "chapter_target_words", 3000)))
