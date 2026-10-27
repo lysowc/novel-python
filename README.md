@@ -12,9 +12,11 @@ AI 小说工坊的 **Python 3.12 + FastAPI** 后端 + 自带前端（Vue 3 + Tai
 - **三大升级**：
   - **检索式上下文**：jieba + BM25，生成每章前按相关性召回已被滚动窗口丢弃的历史章节（`app/services/retrieval.py`）
   - **结构化记忆 v2**：8 个记忆槽（剧情状态/人物/伏笔 open-resolved/世界观/时间线…），旧格式自动迁移（`app/services/memory.py`）
+  - **记忆按章快照**：每章写完保存"第 N 章结束时"的记忆（`novel_memory_snapshot`）；重写第 N 章时上下文只取第 N 章之前的章节和第 N-1 章的记忆快照，重写中间章节只更新该章快照、不改全书最新记忆（`app/services/memory_store.py`）
   - **一致性审校**：`consistency_check` 任务 + 报告落库 + 每 N 章自动触发
-- **连续续写**：章节页「连续续写 N 章」逐章排队；中途某章失败**跳过继续**，坏章可重新生成/重试
-- **多进程 worker**：默认 3 个进程并行（同一本小说串行、不同小说并行），`WORKERS=N` 调整；启动时自动恢复卡死任务
+- **连续续写**：章节页「连续续写 N 章」逐章排队；中途某章失败**跳过继续**，坏章可重新生成/重试；遇到 AI 配置/鉴权类错误（未配置、Key 错误、余额不足、模型不存在）或连续 3 章失败则自动停止
+- **失败重试**：章节页列出需要处理的失败任务，一键重试。正文已保存但摘要/记忆失败的任务，重试只补做摘要/记忆（不会重新生成或多写一章）；摘要/记忆偶发失败会先自动再试一次；被停止的连续续写重试后接着写完剩余章节
+- **多进程 worker**：默认 3 个进程并行，`WORKERS=N` 调整；同一本小说由 Redis 锁（`ai:lock:novel:{id}`，心跳续期）保证串行、不同小说并行，任务领取为原子操作不会重复执行；启动时自动恢复卡死任务并清除残留锁
 - **AI 日志记录 Prompt**：每次调用把实际使用的 system prompt 写入日志（`ai_log.prompt`），后台「AI 日志」可查看
 
 ## 环境要求
@@ -146,7 +148,7 @@ app/                    FastAPI 后端
                         prompt_service / prompt_defaults / task_service
   worker.py             AI 任务消费进程（独立进程）
 commands/               migrate（迁移）/ install（初始化）/ verify（回归自测）
-migrations/             0001_init.sql / 0002_consistency.sql
+migrations/             0001_init.sql … 0004_memory_snapshot.sql
 web/                    Vue 3 + Tailwind 前端源码（构建产物 → static/）
 static/                 前端构建产物（后端直接服务，gitignore）
 scripts/                start.sh / stop.sh（一键启动/停止）
