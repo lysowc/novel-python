@@ -9,6 +9,9 @@ from app.db import engine
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
+# 1050 表已存在 / 1060 列已存在 / 1061 索引名已存在 / 1022 唯一键重复（同名约束）
+ALREADY_APPLIED_CODES = {1050, 1060, 1061, 1022}
+
 
 def ensure_migrations_table(conn) -> None:
     conn.execute(text(
@@ -54,6 +57,12 @@ def run_migrations(action: str) -> int:
                 try:
                     conn.execute(text(statement))
                 except Exception as e:
+                    # MySQL 的 DDL 会立即生效、不能回滚：一个迁移执行到一半失败后，前面的语句已经生效。
+                    # 重跑时"列/索引/表已存在"说明这一句之前已经执行过，跳过继续，保证迁移可重跑。
+                    code = getattr(getattr(e, "orig", None), "args", [None])[0]
+                    if code in ALREADY_APPLIED_CODES:
+                        print(f"  {name}：已存在，跳过 → {statement.splitlines()[0][:80]}")
+                        continue
                     print(f"{name} 执行失败: {e}")
                     print("SQL:", statement[:200])
                     return 1
