@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.helpers import now, word_count
 from app.models import (
-    CHAPTER_WRITTEN_STATUSES, Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting, SystemConfig,
+    CHAPTER_WRITTEN_STATUSES, Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting,
 )
 from app.services import context_builder, memory as memory_service
 from app.services import chapter_versions, memory_store, prompt_service, retrieval, task_service
@@ -189,7 +189,7 @@ class AiService:
         prompt_type = "chapter_continue" if type_ == "continue_chapter" else "chapter_generate"
         system = prompt_service.render(self.db, prompt_type, {"target_words": target_words})
         user_context = context_builder.build_chapter_context(
-            self.db, novel, chapter_no, instruction, retrieved_list, mem_text)
+            self.db, novel, chapter_no, instruction, retrieved_list, mem_text, output_tokens=max_tokens)
 
         result = self.client.chat_stream(
             [{"role": "system", "content": system},
@@ -217,7 +217,9 @@ class AiService:
             self.db.add(chapter)
         else:
             chapter_versions.save_version(self.db, chapter, "regenerate")  # 旧版本可在「历史版本」里恢复
-        chapter.title = context_builder.outline_title(novel, chapter_no)
+        # 新章节用大纲标题；重新生成时保留现有标题（可能是作者手动改过的），只有空标题才补大纲标题
+        if not (chapter.title or "").strip():
+            chapter.title = context_builder.outline_title(novel, chapter_no)
         chapter.content = content
         chapter.summary = ""  # 旧摘要对应旧正文，清空，由下一步重新生成
         chapter.word_count = word_count(content)
@@ -403,11 +405,43 @@ class AiService:
             memory_row.content = new_content
             memory_row.updated_at = now()
             if base.source == memory_store.CURRENT_STALE:
-                warning = "此前没有记忆快照，旧版本本章的内容可能仍残留在记忆中，建议到「记忆」页检查"
+                warning = "此前没有记忆快照，旧版本本章的内容可能仍残留在记忆中，可在「记忆」页从第 1 章重建记忆"
         else:
-            warning = f"只更新了第{no}章的记忆快照；第{no + 1}章之后的记忆仍基于旧版本，后续章节如有矛盾需手动调整"
+            warning = f"只更新了第{no}章的记忆快照；第{no + 1}章之后的记忆仍基于旧版本，可在「记忆」页从第{no}章重建记忆"
         self.db.commit()
         return warning
+
+    def rebuild_memory(self, novel: Novel, start_no: int = 1, on_stage=None) -> None:
+        """从第 start_no 章起逐章重算记忆（每章一次 AI 调用），最后一章的结果成为全书最新记忆。
+
+        用于：重写了中间章节后让后续记忆跟上；旧小说没有快照时从第 1 章完整重建。
+        注意：会覆盖在「记忆」页手动修改过的内容。
+        """
+        chapters = (
+            self.db.query(Chapter)
+            .filter(Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES),
+                    Chapter.chapter_no >= max(1, start_no))
+            .order_by(Chapter.chapter_no)
+            .all()
+        )
+        if not chapters:
+            raise RuntimeError(f"第{start_no}章及之后没有章节，无需重建")
+        first_no = int(chapters[0].chapter_no)
+        has_earlier = self.db.query(Chapter.id).filter(
+            Chapter.novel_id == novel.id, Chapter.chapter_no < first_no).first() is not None
+        snap = memory_store.snapshot_before(self.db, novel.id, first_no)
+        if has_earlier and not snap:
+            raise RuntimeError(f"第{first_no}章之前没有记忆快照，无法从这里接着算，请从第 1 章开始重建")
+        base = memory_store.MemoryBase(snap.content or "", memory_store.SNAPSHOT, snap.chapter_no) if snap \
+            else memory_store.MemoryBase("", memory_store.EMPTY)
+
+        total = len(chapters)
+        for idx, chapter in enumerate(chapters, 1):
+            on_stage and on_stage("rebuild", f"正在重算第{chapter.chapter_no}章的记忆（{idx}/{total}）...")
+            self._retry_once(lambda c=chapter, b=base: self.update_memory(novel, c, b))
+            row = memory_store.get_snapshot(self.db, novel.id, chapter.chapter_no)
+            base = memory_store.MemoryBase(row.content or "", memory_store.SNAPSHOT, chapter.chapter_no)
+        on_stage and on_stage("done", f"记忆重建完成：第{first_no}章至第{chapters[-1].chapter_no}章，共 {total} 章")
 
     # ============ 一致性审校 ============
 

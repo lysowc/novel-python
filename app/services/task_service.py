@@ -1,5 +1,4 @@
 """AI 任务队列：Redis List + 独立 worker 进程消费（与 PHP 版协议一致）"""
-import json
 import threading
 import time
 import uuid
@@ -14,7 +13,7 @@ from app.helpers import json_dumps, now
 from app.models import AiTask, Novel
 from app.services.ai_client import CallbackAbort
 
-QUEUE_KEY = "ai:queue"
+QUEUE_KEY = settings.ai_queue_key or "ai:queue"
 STREAM_PREFIX = "ai:stream:"
 STREAM_TTL = 3600
 
@@ -27,6 +26,7 @@ TYPES = [
     "generate_summary",
     "update_memory",
     "consistency_check",
+    "rebuild_memory",
 ]
 
 
@@ -411,6 +411,8 @@ def execute(task_id: int) -> bool:
                     check_cancel()
                     publish(task_id, {"type": "chunk", "content": delta})
 
+                ai.client.cancel_check = check_cancel  # 非流式调用（摘要/记忆/审校等）等待期间也能取消
+
                 if task.task_type == "generate_setting":
                     ai.generate_setting(novel, on_stage)
                 elif task.task_type == "generate_outline":
@@ -431,6 +433,9 @@ def execute(task_id: int) -> bool:
                             raise RuntimeError(f"第{target_no}章不存在")
                     warning = ai.update_memory(novel, target)
                     on_stage("done", "小说记忆更新完成" + (f"（{warning}）" if warning else ""))
+                elif task.task_type == "rebuild_memory":
+                    start_no = int((task.params or {}).get("chapter_no") or 1)
+                    ai.rebuild_memory(novel, start_no, on_stage)
                 elif task.task_type == "consistency_check":
                     ai.check_consistency(novel, task, on_stage)
                 else:

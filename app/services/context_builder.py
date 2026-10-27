@@ -4,7 +4,7 @@
 """
 from sqlalchemy.orm import Session
 
-from app.models import CHAPTER_WRITTEN_STATUSES, Chapter, Novel, SystemConfig
+from app.models import CHAPTER_WRITTEN_STATUSES, Chapter, Novel
 from app.services import memory as memory_service
 from app.services.retrieval import get_config_int
 
@@ -80,16 +80,34 @@ def outline_title(novel: Novel, chapter_no: int) -> str:
     return f"第{chapter_no}章"
 
 
+# 中文正文约 1 字 ≈ 1 token（各家分词器在 0.6~1.5 之间，取 1 偏保守）；预留给 system prompt 的 tokens
+CHARS_PER_TOKEN = 1.0
+SYSTEM_PROMPT_RESERVE = 2000
+
+
+def context_budget(db: Session, output_tokens: int = 0) -> int:
+    """上下文字符上限：系统设置 context_max_chars 与「默认模型上下文窗口 - 输出预留」取较小值"""
+    budget = get_config_int(db, "context_max_chars", 60000)
+    from app.services.ai_client import default_target
+    target = default_target(db)
+    window = int(target[1].context_window or 0) if target else 0
+    if window > 0:
+        derived = int((window - max(0, output_tokens) - SYSTEM_PROMPT_RESERVE) * CHARS_PER_TOKEN)
+        derived = max(4000, derived)  # 窗口填得过小时也至少留够设定 + 大纲
+        budget = min(budget, derived) if budget > 0 else derived
+    return budget
+
+
 def build_chapter_context(
     db: Session, novel: Novel, chapter_no: int, instruction: str = "", retrieved: list[dict] | None = None,
-    memory: str | None = None,
+    memory: str | None = None, output_tokens: int = 0,
 ) -> str:
     """组装第 chapter_no 章的生成上下文：摘要/正文只取本章之前的章节；
     memory 为"本章开始前"的记忆文本（见 memory_store.memory_before），不传则用全书最新记忆"""
     # 惰性导入，避免模块级循环依赖
     from app.services.retrieval import render_retrieved
 
-    budget = get_config_int(db, "context_max_chars", 60000)
+    budget = context_budget(db, output_tokens)
     fixed = {
         "setting": setting_text(novel),
         "memory": memory if memory is not None else memory_text(novel),

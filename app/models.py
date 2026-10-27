@@ -1,5 +1,4 @@
 """全部数据库模型（与 PHP 版表结构一一对应，共用同一 MySQL 库）"""
-from datetime import datetime
 
 from sqlalchemy import (
     BigInteger, Column, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text,
@@ -195,6 +194,7 @@ class AiModel(Base):
     name = Column(String(128), nullable=False)
     display_name = Column(String(128), nullable=False, default="")
     max_tokens = Column(Integer, nullable=True)
+    context_window = Column(Integer, nullable=False, default=0)  # 模型上下文窗口（tokens），0 = 未填写
     temperature = Column(Numeric(4, 2), nullable=True)
     price_input = Column(Numeric(10, 4), nullable=False, default=0)   # 每百万输入 tokens 的价格
     price_output = Column(Numeric(10, 4), nullable=False, default=0)  # 每百万输出 tokens 的价格
@@ -261,6 +261,7 @@ class AiTask(Base):
         "generate_summary": "生成摘要",
         "update_memory": "更新记忆",
         "consistency_check": "一致性审校",
+        "rebuild_memory": "重建记忆",
     }
 
     @property

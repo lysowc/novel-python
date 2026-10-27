@@ -131,6 +131,27 @@ class AiClient:
     def __init__(self, db: Session, novel_id: int = 0):
         self.db = db
         self.novel_id = novel_id  # 记入 AI 日志，用于按小说统计用量
+        # 可选：等待非流式响应期间定期调用，抛 CallbackAbort 即中止（用于取消任务）
+        self.cancel_check = None
+
+    def _post_cancellable(self, client: httpx.Client, url: str, payload: dict, headers: dict):
+        """非流式请求：没有取消检查时直接请求；有则在线程里请求、每 0.5 秒检查一次是否被取消"""
+        if self.cancel_check is None:
+            return client.post(url, json=payload, headers=headers)
+        import concurrent.futures as cf
+        executor = cf.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(client.post, url, json=payload, headers=headers)
+        try:
+            while True:
+                try:
+                    return future.result(timeout=0.5)
+                except cf.TimeoutError:
+                    self.cancel_check()  # 被取消时抛 CallbackAbort
+        except CallbackAbort:
+            client.close()  # 关闭连接，让后台请求尽快结束
+            raise
+        finally:
+            executor.shutdown(wait=False)
 
     def _resolve(self):
         target = default_target(self.db)
@@ -174,7 +195,11 @@ class AiClient:
         start = time.time()
         try:
             with httpx.Client(timeout=httpx.Timeout(timeout, connect=20), follow_redirects=True) as client:
-                resp = client.post(endpoint(provider), json=payload, headers=_headers(provider))
+                resp = self._post_cancellable(client, endpoint(provider), payload, _headers(provider))
+        except CallbackAbort:
+            duration = int((time.time() - start) * 1000)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", "已取消", prompt, self.novel_id)
+            raise
         except Exception as e:
             duration = int((time.time() - start) * 1000)
             log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id)
