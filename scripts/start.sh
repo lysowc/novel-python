@@ -32,11 +32,20 @@ else
   echo "✔ API 已启动: http://127.0.0.1:${PORT}（日志 runtime/api.log）"
 fi
 
-# 2. 恢复卡死任务（只跑一次，避免多 worker 启动时互相误判）
-"${PY}" -m app.worker --recover
-
-# 3. AI 任务消费进程（多进程并行；同一本小说仍串行，不同小说可并行）
+# 2. 恢复卡死任务 + 清除残留小说锁（只跑一次，避免多 worker 启动时互相误判）
+#    只在没有任何 worker 存活时执行：否则会把正在执行的任务误标为失败、删掉它持有的锁
 WORKERS="${WORKERS:-3}"
+ANY_WORKER_ALIVE=0
+for i in $(seq 1 "${WORKERS}"); do
+  if alive "worker.${i}"; then ANY_WORKER_ALIVE=1; fi
+done
+if [ "${ANY_WORKER_ALIVE}" = "0" ]; then
+  "${PY}" -m app.worker --recover
+else
+  echo "⚠ 已有 worker 在运行，跳过卡死任务恢复"
+fi
+
+# 3. AI 任务消费进程（多进程并行；同一本小说由 Redis 锁保证串行，不同小说可并行）
 RUNNING_WORKERS=0
 for i in $(seq 1 "${WORKERS}"); do
   if alive "worker.${i}"; then

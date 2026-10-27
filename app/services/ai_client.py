@@ -12,6 +12,30 @@ from app.config import settings
 from app.helpers import now
 from app.models import AiLog, AiModel, AiProvider, SystemConfig
 
+# 这些 HTTP 状态说明是配置/账号问题（Key 错误、余额不足、无权限、模型或地址不存在），
+# 重试不会好转；连续续写遇到时应停止，而不是继续逐章失败
+FATAL_HTTP_STATUS = {401, 402, 403, 404}
+
+
+class AiFatalError(RuntimeError):
+    """不可恢复的 AI 调用错误（配置缺失 / 鉴权失败 / 额度不足等）"""
+
+
+def is_fatal(exc: BaseException | None) -> bool:
+    """沿异常链（raise ... from e）判断是否为不可恢复错误"""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, AiFatalError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _http_error(status_code: int, message: str) -> RuntimeError:
+    cls = AiFatalError if status_code in FATAL_HTTP_STATUS else RuntimeError
+    return cls(f"AI 调用失败: {message}")
+
 
 def config_value(db: Session, key: str, default):
     row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
@@ -41,7 +65,7 @@ def default_target(db: Session) -> tuple[AiProvider, AiModel] | None:
 def endpoint(provider: AiProvider) -> str:
     base = (provider.base_url or "").rstrip("/")
     if not base:
-        raise RuntimeError("AI Provider base_url 为空")
+        raise AiFatalError("AI Provider base_url 为空")
     if base.endswith("/chat/completions"):
         return base
     if base.endswith("/v1"):
@@ -89,7 +113,7 @@ class AiClient:
     def _resolve(self):
         target = default_target(self.db)
         if not target:
-            raise RuntimeError("没有可用的 AI Provider/Model，请先在 AI 配置中添加并启用")
+            raise AiFatalError("没有可用的 AI Provider/Model，请先在 AI 配置中添加并启用")
         return target
 
     def _build_payload(self, messages: list[dict], model: AiModel, options: dict, stream: bool) -> dict:
@@ -140,7 +164,7 @@ class AiClient:
             err = (body or {}).get("error", {}).get("message", "") if isinstance(body, dict) else ""
             err = err or f"HTTP {resp.status_code}"
             log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt)
-            raise RuntimeError(f"AI 调用失败: {err}")
+            raise _http_error(resp.status_code, str(err))
 
         text = str(body["choices"][0]["message"]["content"])
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
@@ -178,7 +202,7 @@ class AiClient:
                     except (ValueError, UnicodeDecodeError):
                         pass
                     log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt)
-                    raise RuntimeError(f"AI 调用失败: {err}")
+                    raise _http_error(resp.status_code, err)
 
                 on_stage and on_stage("stream_start")
                 text = ""

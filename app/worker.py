@@ -6,7 +6,7 @@
 import sys
 import time
 
-from app.services.task_service import QUEUE_KEY, connect_redis, execute
+from app.services.task_service import DEFER_DELAY, QUEUE_KEY, clear_novel_locks, connect_redis, execute
 
 
 def recover_stuck_tasks() -> None:
@@ -31,6 +31,14 @@ def recover_stuck_tasks() -> None:
             print(f"[worker] 已将 {len(stuck)} 个中断任务恢复为 failed（可重试）")
     finally:
         db.close()
+
+    # 所有 worker 都在重启，不可能有任务在执行：清掉残留的小说锁，免得等 TTL 过期
+    try:
+        cleared = clear_novel_locks()
+        if cleared:
+            print(f"[worker] 已清除 {cleared} 个残留的小说锁")
+    except Exception as e:
+        print("[worker] 清除小说锁失败:", e)
 
 
 def main() -> None:
@@ -58,7 +66,9 @@ def main() -> None:
             continue
 
         try:
-            execute(task_id)
+            if not execute(task_id):
+                # 该小说有其他任务在执行，任务已放回队尾；稍等再取，避免空转
+                time.sleep(DEFER_DELAY)
         except Exception as e:
             print("[worker] execute error:", e)
             # 兜底：标记失败，避免任务永远 running
