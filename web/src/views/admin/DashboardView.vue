@@ -2,10 +2,12 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   BookOpen, FileText, Feather, Lightbulb, LoaderCircle, ScrollText,
-  Timer, CheckCircle2, XCircle, Clock3, ListTodo,
+  Timer, CheckCircle2, XCircle, Clock3, ListTodo, RotateCw,
 } from '@lucide/vue'
 import LoadingState from '@/components/common/LoadingState.vue'
-import { fetchDashboard } from '@/api'
+import { toast } from 'vue-sonner'
+import { Button } from '@/components/ui/button'
+import { fetchDashboard, retryTask } from '@/api'
 import { formatNumber, formatRelative } from '@/lib/format'
 import type { Dashboard, TaskStatus } from '@/types/api'
 
@@ -39,13 +41,29 @@ const taskTypeLabel: Record<string, string> = {
   consistency_check: '一致性审校',
 }
 
-onMounted(async () => {
+async function load() {
   try {
     data.value = await fetchDashboard()
   } finally {
     loading.value = false
   }
-})
+}
+
+const retrying = ref<number | null>(null)
+async function retry(id: number) {
+  retrying.value = id
+  try {
+    await retryTask(id)
+    toast.success('已重新入队，可到对应小说的章节页查看进度')
+    await load()
+  } catch {
+    // 请求层已提示
+  } finally {
+    retrying.value = null
+  }
+}
+
+onMounted(load)
 </script>
 
 <template>
@@ -91,7 +109,21 @@ onMounted(async () => {
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium">{{ taskTypeLabel[t.task_type] || t.task_type }}</p>
                 <p class="text-xs text-muted-foreground">任务 #{{ t.id }} · {{ formatRelative(t.created_at) }}</p>
+                <p v-if="t.status === 'failed' && t.error_message" class="line-clamp-1 break-all text-xs text-destructive/80" :title="t.error_message">
+                  {{ t.error_message }}
+                </p>
               </div>
+              <Button
+                v-if="t.status === 'failed'"
+                size="sm"
+                variant="ghost"
+                class="h-7 gap-1 px-2 text-xs"
+                :disabled="retrying === t.id"
+                @click="retry(t.id)"
+              >
+                <RotateCw class="size-3" :class="retrying === t.id && 'animate-spin'" />
+                重试
+              </Button>
               <span
                 class="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium"
                 :class="taskStatusMap[t.status]?.cls"

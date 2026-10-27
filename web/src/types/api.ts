@@ -156,6 +156,8 @@ export interface AiTask {
   ref_type?: string
   status: TaskStatus
   error_message: string
+  /** 任务参数；resume = 章节已保存待补做摘要/记忆，chain_stopped = 连续续写因错误停止 */
+  params?: Record<string, unknown> | null
   created_at: string
   updated_at: string
 }

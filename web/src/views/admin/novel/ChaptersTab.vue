@@ -6,14 +6,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button'
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Eye, FilePlus2, LoaderCircle, Pencil, Plus, RefreshCw, Sparkles, Trash2, Wand2 } from '@lucide/vue'
+import { Eye, FilePlus2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Sparkles, Trash2, TriangleAlert, Wand2 } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
 import {
-  createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchTasks, updateChapter,
+  createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchTasks, retryTask, updateChapter,
 } from '@/api'
 import { countWords, formatNumber, formatRelative } from '@/lib/format'
 import type { AiTask, Chapter } from '@/types/api'
@@ -49,6 +49,57 @@ const viewing = ref<Chapter | null>(null)
 const runningTask = ref<AiTask | null>(null)
 const progressOpen = ref(false)
 
+// 失败任务（可重试）
+const recentTasks = ref<AiTask[]>([])
+const retrying = ref<number | null>(null)
+const DISMISS_KEY = `novel:${props.novelId}:dismissedTasks`
+function readDismissed(): number[] {
+  try {
+    return JSON.parse(localStorage.getItem(DISMISS_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+const dismissed = ref<number[]>(readDismissed())
+
+/** 需要处理的失败任务：章节已保存待补做的、连续续写被停止的，以及最近一个任务失败的 */
+const failedTasks = computed(() =>
+  recentTasks.value.filter((t, i) => {
+    if (t.status !== 'failed' || dismissed.value.includes(t.id)) return false
+    return !!t.params?.resume || !!t.params?.chain_stopped || i === 0
+  }),
+)
+
+function retryLabel(t: AiTask) {
+  if (t.params?.resume) return '补做摘要/记忆'
+  if (t.params?.chain_stopped) return '重试并继续续写'
+  return '重试'
+}
+
+async function retry(t: AiTask) {
+  if (openProgressIfRunning()) return
+  retrying.value = t.id
+  try {
+    runningTask.value = await retryTask(t.id)
+    toast.success('已重新入队')
+    progressOpen.value = true
+    loadRunningTask()
+  } catch {
+    // 请求层已提示
+  } finally {
+    retrying.value = null
+  }
+}
+
+function dismiss(id: number) {
+  dismissed.value = [...dismissed.value, id].slice(-100)
+  try {
+    localStorage.setItem(DISMISS_KEY, JSON.stringify(dismissed.value))
+  } catch {
+    // 无痕模式等场景下存储不可用，仅本次生效
+  }
+}
+
 const latestNo = computed(() =>
   chapters.value.length ? Math.max(...chapters.value.map((c) => c.chapter_no)) : 0,
 )
@@ -65,7 +116,8 @@ async function load() {
 
 async function loadRunningTask() {
   try {
-    const res = await fetchTasks({ novel_id: props.novelId, page_size: 20 })
+    const res = await fetchTasks({ novel_id: props.novelId, page_size: 30 })
+    recentTasks.value = res.list
     runningTask.value = res.list.find((t) => t.status === 'pending' || t.status === 'running') ?? null
   } catch {
     runningTask.value = null
@@ -189,7 +241,8 @@ function startAi(type: 'generate_chapter' | 'continue_chapter' | 'regenerate_cha
 
 function aiParams() {
   const p: Record<string, unknown> = {}
-  if (aiTask.value?.no) p.chapter_no = aiTask.value.no
+  // continue_chapter 总是"在最大章号之后续写下一章"，不能传章号（传了会覆盖最后一章）
+  if (aiTask.value?.no && aiTask.value.type !== 'continue_chapter') p.chapter_no = aiTask.value.no
   if (aiTask.value?.type === 'generate_chapter') p.target_words = 3000
   if (aiTask.value?.type === 'continue_chapter') p.target_words = 3000
   if (aiTask.value?.remaining) p.remaining = aiTask.value.remaining
@@ -271,6 +324,38 @@ onBeforeUnmount(stopPolling)
       </Button>
     </div>
 
+    <!-- 失败任务（可重试） -->
+    <div
+      v-if="failedTasks.length"
+      class="mb-4 space-y-2.5 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
+    >
+      <p class="flex items-center gap-2 text-sm font-medium text-destructive">
+        <TriangleAlert class="size-4" />
+        有 {{ failedTasks.length }} 个任务失败
+      </p>
+      <div v-for="t in failedTasks" :key="t.id" class="flex flex-wrap items-start gap-2 sm:flex-nowrap">
+        <div class="min-w-0 flex-1 basis-full sm:basis-auto">
+          <p class="text-sm font-medium">
+            {{ t.task_type_text || t.task_type }}
+            <span class="font-normal text-muted-foreground">（任务 #{{ t.id }} · {{ formatRelative(t.updated_at) }}）</span>
+          </p>
+          <p class="line-clamp-2 break-all text-xs text-muted-foreground">{{ t.error_message || '未知错误' }}</p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          class="gap-1.5"
+          :disabled="!!runningTask || retrying === t.id"
+          @click="retry(t)"
+        >
+          <LoaderCircle v-if="retrying === t.id" class="size-3.5 animate-spin" />
+          <RotateCw v-else class="size-3.5" />
+          {{ retryLabel(t) }}
+        </Button>
+        <Button size="sm" variant="ghost" class="text-muted-foreground" @click="dismiss(t.id)">忽略</Button>
+      </div>
+    </div>
+
     <LoadingState v-if="loading" variant="table" :rows="5" />
 
     <div v-else-if="chapters.length === 0" class="rounded-2xl border bg-card">
@@ -307,7 +392,12 @@ onBeforeUnmount(stopPolling)
             </TableCell>
             <TableCell class="hidden sm:table-cell">{{ formatNumber(c.word_count) }}</TableCell>
             <TableCell class="hidden max-w-52 md:table-cell">
-              <p class="line-clamp-1 text-xs text-muted-foreground">{{ c.summary || '—' }}</p>
+              <p v-if="c.summary" class="line-clamp-1 text-xs text-muted-foreground">{{ c.summary }}</p>
+              <span
+                v-else
+                class="rounded-full border border-dashed border-foreground/30 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                title="可点右侧「AI 补摘要」生成"
+              >缺摘要</span>
             </TableCell>
             <TableCell class="hidden lg:table-cell text-xs text-muted-foreground">{{ formatRelative(c.updated_at) }}</TableCell>
             <TableCell class="text-right">
