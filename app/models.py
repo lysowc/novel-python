@@ -113,6 +113,36 @@ class Chapter(Base):
     updated_at = Column(DateTime, nullable=True)
 
 
+# 已写章节的状态：草稿（读者不可见，等待审阅）/ 已发布；AI 上下文两者都算"已写"
+CHAPTER_WRITTEN_STATUSES = ("published", "draft")
+
+
+class ChapterVersion(Base):
+    """章节历史版本（被覆盖/删除前的旧内容）"""
+    __tablename__ = "chapter_version"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    chapter_no = Column(Integer, nullable=False)
+    chapter_id = Column(Integer, nullable=False, default=0)
+    title = Column(String(255), nullable=False, default="")
+    summary = Column(Text, nullable=True)
+    content = Column(Text, nullable=True)
+    word_count = Column(Integer, nullable=False, default=0)
+    source = Column(String(32), nullable=False, default="")
+    created_at = Column(DateTime, nullable=True)
+
+    SOURCE_TEXT = {
+        "regenerate": "AI 重新生成前",
+        "edit": "手动编辑前",
+        "restore": "恢复版本前",
+        "delete": "删除前",
+    }
+
+    @property
+    def source_text(self) -> str:
+        return self.SOURCE_TEXT.get(self.source, self.source)
+
+
 class Idea(Base):
     __tablename__ = "idea"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -166,6 +196,8 @@ class AiModel(Base):
     display_name = Column(String(128), nullable=False, default="")
     max_tokens = Column(Integer, nullable=True)
     temperature = Column(Numeric(4, 2), nullable=True)
+    price_input = Column(Numeric(10, 4), nullable=False, default=0)   # 每百万输入 tokens 的价格
+    price_output = Column(Numeric(10, 4), nullable=False, default=0)  # 每百万输出 tokens 的价格
     status = Column(SmallInteger, nullable=False, default=1)
     is_default = Column(SmallInteger, nullable=False, default=0)
     created_at = Column(DateTime, nullable=True)
@@ -239,6 +271,7 @@ class AiTask(Base):
 class AiLog(Base):
     __tablename__ = "ai_log"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False, default=0)
     provider = Column(String(64), nullable=False, default="")
     model = Column(String(128), nullable=False, default="")
     task_type = Column(String(64), nullable=False, default="")
@@ -246,6 +279,8 @@ class AiLog(Base):
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
+    cost = Column(Numeric(14, 6), nullable=False, default=0)
+    usage_estimated = Column(SmallInteger, nullable=False, default=0)  # 1 = 接口未返回 usage，按字数估算
     duration = Column(Integer, nullable=False, default=0)
     status = Column(String(20), nullable=False, default="success")
     error_message = Column(String(1000), nullable=False, default="")

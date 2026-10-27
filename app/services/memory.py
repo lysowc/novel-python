@@ -12,7 +12,11 @@ SLOTS = [
     ("unresolved_events", "未解决事件"),
     ("important_items", "重要物品"),
     ("style_notes", "文风备注"),
+    ("character_archive", "其他已登场人物"),
 ]
+
+ARCHIVE_LIMIT = 200      # 已登场人物名册上限
+WORLD_FACTS_LIMIT = 100  # 世界观事实上限
 
 
 def parse_memory(content: str | None) -> dict:
@@ -117,6 +121,13 @@ def _render_slot(slot: str, value) -> str:
             else:
                 lines.append("- " + str(item))
         return "\n".join(lines)
+    if slot == "character_archive":
+        bits = []
+        for c in value if isinstance(value, list) else []:
+            if isinstance(c, dict) and str(c.get("name", "")).strip():
+                status = str(c.get("status", "")).strip()
+                bits.append(c["name"].strip() + (f"（{status[:20]}）" if status else ""))
+        return "、".join(bits)
     # style_notes 等纯文本槽
     if isinstance(value, list):
         return "\n".join(str(x) for x in value)
@@ -229,4 +240,86 @@ def normalize_memory(data: dict) -> dict:
     style = data.get("style_notes", "")
     out["style_notes"] = "\n".join(str(x) for x in style) if isinstance(style, list) else str(style).strip()
 
+    archive = []
+    for c in data.get("character_archive", []) if isinstance(data.get("character_archive"), list) else []:
+        if isinstance(c, str) and c.strip():
+            archive.append({"name": c.strip(), "status": ""})
+        elif isinstance(c, dict) and str(c.get("name", "")).strip():
+            archive.append({"name": str(c["name"]).strip(), "status": str(c.get("status", "")).strip()})
+    out["character_archive"] = archive
+
     return out
+
+
+# ---------- 增量合并：防止 AI 重写记忆时"顺手"丢掉信息 ----------
+
+def _bigrams(text: str) -> set[str]:
+    t = "".join(str(text).split()).lower()
+    return {t[i:i + 2] for i in range(len(t) - 1)} or ({t} if t else set())
+
+
+def _similar(a: str, b: str, threshold: float = 0.5) -> bool:
+    """字符二元组重叠系数（交集 / 较短一方）：AI 换个说法、加几个字描述同一条伏笔/事实时也能认出来"""
+    x, y = _bigrams(a), _bigrams(b)
+    if not x or not y:
+        return False
+    return len(x & y) / min(len(x), len(y)) >= threshold
+
+
+def merge_memory(old_content: str | None, new: dict) -> tuple[dict, list[str]]:
+    """把 AI 新输出的记忆（已 normalize）与旧记忆合并，返回 (合并结果, 找回的条目说明)。
+
+    记忆每章都由 AI 整份重写，容易漏掉信息，这里兜底：
+    - 未回收（open）的伏笔：新记忆里没有、也没被标为已回收 → 补回（伏笔只能被"回收"，不能被"遗忘"）
+    - 重要物品、世界观事实：新记忆里没有 → 补回
+    - 人物：新记忆里删掉的人物移入「其他已登场人物」名册，保留姓名和最后状态，避免后文写出同名新角色或"复活"
+    - 当前状态的字段：新值为空时沿用旧值
+    - 时间线、未解决事件按 prompt 本来就允许删减，不补回
+    """
+    old = parse_memory(old_content)
+    if old.get("schema") != SCHEMA_V2:
+        return new, []
+    old = normalize_memory(old)
+    out = json.loads(json.dumps(new, ensure_ascii=False))
+    restored: list[str] = []
+
+    cs_old, cs_new = old.get("current_state") or {}, out.setdefault("current_state", {})
+    for k in ("location", "time", "plot_progress"):
+        if not str(cs_new.get(k, "")).strip() and str(cs_old.get(k, "")).strip():
+            cs_new[k] = cs_old[k]
+
+    new_fores = out.setdefault("foreshadowing", [])
+    for f in old.get("foreshadowing", []):
+        if f.get("status") != "open":
+            continue
+        if not any(_similar(f["description"], n["description"]) for n in new_fores):
+            new_fores.append(f)
+            restored.append("伏笔：" + f["description"][:30])
+
+    new_items = out.setdefault("important_items", [])
+    names = {i["name"] for i in new_items}
+    for item in old.get("important_items", []):
+        if item["name"] not in names:
+            new_items.append(item)
+            names.add(item["name"])
+            restored.append("物品：" + item["name"])
+
+    new_facts = out.setdefault("world_facts", [])
+    for fact in old.get("world_facts", []):
+        if not any(_similar(fact, n) for n in new_facts):
+            new_facts.append(fact)
+            restored.append("世界观：" + fact[:30])
+    out["world_facts"] = new_facts[-WORLD_FACTS_LIMIT:]
+
+    active = {c["name"] for c in out.get("characters", [])}
+    archive = {c["name"]: c for c in old.get("character_archive", [])}
+    for c in new.get("character_archive", []) or []:
+        archive[c["name"]] = c
+    for c in old.get("characters", []):
+        if c["name"] not in active:
+            archive[c["name"]] = {"name": c["name"], "status": c.get("status", "")}
+    for name in active:  # 重新活跃的人物移出名册
+        archive.pop(name, None)
+    out["character_archive"] = list(archive.values())[-ARCHIVE_LIMIT:]
+
+    return out, restored

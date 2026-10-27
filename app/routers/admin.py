@@ -13,8 +13,9 @@ from app.helpers import dt_str, fail, fail_401, json_dumps, now, ok, word_count
 from app.models import (
     Admin, AiLog, AiModel, AiProvider, AiTask, Category, Chapter, ConsistencyReport,
     Idea, IdeaChat, Novel, NovelMemory, NovelSetting, Prompt, SystemConfig,
+    CHAPTER_WRITTEN_STATUSES,
 )
-from app.services import memory_store, prompt_service, task_service
+from app.services import chapter_versions, memory_store, prompt_service, task_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -81,6 +82,7 @@ def f_model(m: AiModel) -> dict:
         "name": m.name, "display_name": m.display_name,
         "max_tokens": m.max_tokens,
         "temperature": float(m.temperature) if m.temperature is not None else None,
+        "price_input": float(m.price_input or 0), "price_output": float(m.price_output or 0),
         "status": m.status, "is_default": m.is_default,
         "created_at": dt_str(m.created_at), "updated_at": dt_str(m.updated_at),
     }
@@ -97,7 +99,8 @@ def f_task(t: AiTask) -> dict:
 
 def f_log(l: AiLog) -> dict:
     return {
-        "id": l.id, "provider": l.provider, "model": l.model, "task_type": l.task_type,
+        "id": l.id, "novel_id": l.novel_id, "provider": l.provider, "model": l.model, "task_type": l.task_type,
+        "cost": float(l.cost or 0), "usage_estimated": l.usage_estimated,
         "prompt": l.prompt, "prompt_tokens": l.prompt_tokens,
         "completion_tokens": l.completion_tokens, "total_tokens": l.total_tokens,
         "duration": l.duration, "status": l.status, "error_message": l.error_message,
@@ -327,27 +330,20 @@ def novel_destroy(nid: int, db: Session = Depends(get_db)):
     n = db.query(Novel).filter(Novel.id == nid).first()
     if not n:
         return fail("小说不存在")
-    if task_service.novel_busy(db, nid):
-        return fail("该小说有 AI 任务正在排队或执行，请等任务结束后再删除")
-    # 持有小说锁期间删除：worker 此刻无法开始这本小说的任务，避免写入"孤儿"章节
-    lock = task_service.NovelLock(nid)
     try:
-        if not lock.acquire():
-            return fail("该小说有 AI 任务正在执行，请稍后再删除")
-    except Exception:
-        return fail("任务队列（Redis）不可用，暂时无法确认是否有任务在执行，请稍后再试")
-    try:
-        db.query(Chapter).filter(Chapter.novel_id == nid).delete()
-        db.query(NovelSetting).filter(NovelSetting.novel_id == nid).delete()
-        db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete()
-        db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete()
-        memory_store.delete_snapshots(db, nid)
-        db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)
-        db.query(Idea).filter(Idea.novel_id == nid).update({"novel_id": None}, synchronize_session=False)
-        db.delete(n)
-        db.commit()
-    finally:
-        lock.release()
+        with task_service.novel_guard(db, nid, "删除"):
+            db.query(Chapter).filter(Chapter.novel_id == nid).delete()
+            db.query(NovelSetting).filter(NovelSetting.novel_id == nid).delete()
+            db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete()
+            db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete()
+            memory_store.delete_snapshots(db, nid)
+            chapter_versions.delete_versions(db, nid)
+            db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)
+            db.query(Idea).filter(Idea.novel_id == nid).update({"novel_id": None}, synchronize_session=False)
+            db.delete(n)
+            db.commit()
+    except RuntimeError as e:
+        return fail(str(e))
     return ok(None, "已删除")
 
 
@@ -357,6 +353,20 @@ def novel_chapters(nid: int, db: Session = Depends(get_db)):
         return fail("小说不存在")
     rows = db.query(Chapter).filter(Chapter.novel_id == nid).order_by(Chapter.chapter_no).all()
     return ok([f_chapter(c) for c in rows])
+
+
+@router.post("/novels/{nid}/chapters/publish")
+def novel_chapters_publish(nid: int, payload: dict | None = None, db: Session = Depends(get_db)):
+    """批量发布草稿章节：body {"ids": [...]}；不传 ids 则发布全部草稿"""
+    if not db.query(Novel).filter(Novel.id == nid).first():
+        return fail("小说不存在")
+    q = db.query(Chapter).filter(Chapter.novel_id == nid, Chapter.status == "draft")
+    ids = (payload or {}).get("ids")
+    if isinstance(ids, list) and ids:
+        q = q.filter(Chapter.id.in_([int(i) for i in ids]))
+    count = q.update({"status": "published", "updated_at": now()}, synchronize_session=False)
+    db.commit()
+    return ok({"count": count}, f"已发布 {count} 章" if count else "没有需要发布的草稿")
 
 
 @router.post("/novels/{nid}/chapters")
@@ -522,8 +532,13 @@ def chapter_update(cid: int, payload: dict, db: Session = Depends(get_db)):
         c.title = title
     if payload.get("summary") is not None:
         c.summary = str(payload.get("summary"))
-    content_changed = payload.get("content") is not None
+    if payload.get("status") is not None:
+        if str(payload.get("status")) not in CHAPTER_WRITTEN_STATUSES:
+            return fail("章节状态只能是 draft 或 published")
+        c.status = str(payload.get("status"))
+    content_changed = payload.get("content") is not None and str(payload.get("content")) != (c.content or "")
     if content_changed:
+        chapter_versions.save_version(db, c, "edit")
         c.content = str(payload.get("content"))
         c.word_count = word_count(c.content)
     c.updated_at = now()
@@ -541,6 +556,7 @@ def chapter_destroy(cid: int, db: Session = Depends(get_db)):
     if not c:
         return fail("章节不存在")
     novel_id = c.novel_id
+    chapter_versions.save_version(db, c, "delete")  # 可在「已删除章节」里恢复
     memory_store.delete_snapshots(db, novel_id, c.chapter_no)
     db.delete(c)
     db.commit()
@@ -877,6 +893,14 @@ def ai_models(db: Session = Depends(get_db)):
     return ok([f_model(m) for m in rows])
 
 
+def _price(value) -> float:
+    """模型单价（每百万 tokens），非法或负数按 0"""
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @router.post("/ai/models")
 def ai_model_store(payload: dict, db: Session = Depends(get_db)):
     provider_id = int(payload.get("provider_id") or 0)
@@ -890,6 +914,7 @@ def ai_model_store(payload: dict, db: Session = Depends(get_db)):
         display_name=str(payload.get("display_name") or name).strip(),
         max_tokens=int(payload.get("max_tokens") or 0) or None,
         temperature=float(payload.get("temperature")) if payload.get("temperature") not in (None, "") else None,
+        price_input=_price(payload.get("price_input")), price_output=_price(payload.get("price_output")),
         status=1 if payload.get("status", 1) else 0,
         is_default=1 if db.query(AiModel).count() == 0 else 0,
         created_at=now(), updated_at=now(),
@@ -917,6 +942,10 @@ def ai_model_update(mid: int, payload: dict, db: Session = Depends(get_db)):
         m.max_tokens = int(payload.get("max_tokens")) or None
     if payload.get("temperature") is not None:
         m.temperature = None if payload.get("temperature") == "" else float(payload.get("temperature"))
+    if payload.get("price_input") is not None:
+        m.price_input = _price(payload.get("price_input"))
+    if payload.get("price_output") is not None:
+        m.price_output = _price(payload.get("price_output"))
     if payload.get("status") is not None:
         m.status = 1 if payload.get("status") else 0
     m.updated_at = now()
@@ -1003,6 +1032,8 @@ CONFIG_KEYS = {
     "retrieval_enabled": "启用相关章节检索",
     "retrieval_max_chapters": "每章召回的相关章节数",
     "consistency_auto_interval": "自动审校间隔（章）",
+    "chapter_auto_publish": "AI 新章节自动发布",
+    "context_max_chars": "生成上下文总字符上限",
 }
 
 CONFIG_DEFAULTS = {
@@ -1011,6 +1042,7 @@ CONFIG_DEFAULTS = {
     "chapter_target_words": "3000", "outline_volumes": "3",
     "outline_chapters_per_volume": "20", "retrieval_enabled": "1",
     "retrieval_max_chapters": "5", "consistency_auto_interval": "0",
+    "chapter_auto_publish": "1", "context_max_chars": "60000",
 }
 
 

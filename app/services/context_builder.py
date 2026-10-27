@@ -4,7 +4,7 @@
 """
 from sqlalchemy.orm import Session
 
-from app.models import Chapter, Novel, SystemConfig
+from app.models import CHAPTER_WRITTEN_STATUSES, Chapter, Novel, SystemConfig
 from app.services import memory as memory_service
 from app.services.retrieval import get_config_int
 
@@ -25,15 +25,16 @@ def memory_text(novel: Novel) -> str:
 
 
 def published_chapters(db: Session, novel: Novel, before_no: int | None = None):
-    """已发布章节（章号倒序）；指定 before_no 时只取它之前的章节（生成/重写第 N 章时不能看到第 N 章及之后）"""
-    q = db.query(Chapter).filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+    """已写章节（含草稿，章号倒序）；指定 before_no 时只取它之前的章节（生成/重写第 N 章时不能看到第 N 章及之后）"""
+    q = db.query(Chapter).filter(Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES))
     if before_no is not None:
         q = q.filter(Chapter.chapter_no < before_no)
     return q.order_by(Chapter.chapter_no.desc())
 
 
-def summaries_text(db: Session, novel: Novel, before_no: int | None = None) -> str:
-    cap = get_config_int(db, "context_summary_max_chars", 12000)
+def summaries_text(db: Session, novel: Novel, before_no: int | None = None, cap: int | None = None) -> str:
+    if cap is None:
+        cap = get_config_int(db, "context_summary_max_chars", 12000)
     chapters = published_chapters(db, novel, before_no).all()
     lines = []
     length = 0
@@ -48,8 +49,8 @@ def summaries_text(db: Session, novel: Novel, before_no: int | None = None) -> s
     return "\n\n".join(reversed(lines))
 
 
-def recent_chapters_text(db: Session, novel: Novel, before_no: int | None = None) -> str:
-    n = get_config_int(db, "context_max_recent_chapters", 5)
+def recent_chapters_text(db: Session, novel: Novel, before_no: int | None = None, limit: int | None = None) -> str:
+    n = get_config_int(db, "context_max_recent_chapters", 5) if limit is None else limit
     if n <= 0:
         return "（未启用最近章节正文）"
     chapters = published_chapters(db, novel, before_no).limit(n).all()[::-1]
@@ -88,21 +89,59 @@ def build_chapter_context(
     # 惰性导入，避免模块级循环依赖
     from app.services.retrieval import render_retrieved
 
-    sections = [
-        ("【小说设定】", setting_text(novel)),
-        ("【小说记忆（当前状态）】", memory if memory is not None else memory_text(novel)),
-        ("【历史章节摘要】", summaries_text(db, novel, chapter_no)),
-    ]
-    retrieved_text = render_retrieved(retrieved or [])
-    if retrieved_text:
-        sections.append(("【相关历史章节（检索召回）】", retrieved_text))
-    sections.append(("【最近章节正文】", recent_chapters_text(db, novel, chapter_no)))
-    sections.append(("【本章大纲】", outline_target(novel, chapter_no)))
+    budget = get_config_int(db, "context_max_chars", 60000)
+    fixed = {
+        "setting": setting_text(novel),
+        "memory": memory if memory is not None else memory_text(novel),
+        "outline": outline_target(novel, chapter_no),
+        "instruction": instruction.strip(),
+    }
+    retrieved = list(retrieved or [])
+    recent_n = get_config_int(db, "context_max_recent_chapters", 5)
+    summary_cap = get_config_int(db, "context_summary_max_chars", 12000)
 
-    parts = [f"{label}\n{content}" for label, content in sections]
-    if instruction.strip():
-        parts.append("【用户附加要求】\n" + instruction.strip())
-    return "\n\n".join(parts)
+    def assemble() -> str:
+        sections = [
+            ("【小说设定】", fixed["setting"]),
+            ("【小说记忆（当前状态）】", fixed["memory"]),
+            ("【历史章节摘要】", summaries_text(db, novel, chapter_no, summary_cap)),
+        ]
+        retrieved_text = render_retrieved(retrieved)
+        if retrieved_text:
+            sections.append(("【相关历史章节（检索召回）】", retrieved_text))
+        sections.append(("【最近章节正文】", recent_chapters_text(db, novel, chapter_no, recent_n)))
+        sections.append(("【本章大纲】", fixed["outline"]))
+        parts = [f"{label}\n{content}" for label, content in sections]
+        if fixed["instruction"]:
+            parts.append("【用户附加要求】\n" + fixed["instruction"])
+        return "\n\n".join(parts)
+
+    # 总长度预算：超出时依次压缩 最近正文（至少留 1 章）→ 召回章节 → 摘要窗口，设定/记忆/大纲不动
+    text = assemble()
+    while budget > 0 and len(text) > budget:
+        if recent_n > 1:
+            recent_n -= 1
+        elif retrieved:
+            retrieved.pop()
+        elif summary_cap > 1000:
+            summary_cap = max(1000, int(summary_cap * 0.6))
+        else:
+            break
+        text = assemble()
+    return text
+
+
+def recent_text_sample(db: Session, novel: Novel, chapters: int = 3, per_chapter: int = 4000) -> str:
+    """一致性审校用：最近几章正文（每章截断），供检查正文层面的细节矛盾"""
+    rows = published_chapters(db, novel).limit(max(1, chapters)).all()[::-1]
+    parts = []
+    for c in rows:
+        body = (c.content or "").strip()
+        if len(body) > per_chapter:
+            body = body[:per_chapter] + "\n……（截断）"
+        if body:
+            parts.append(f"第{c.chapter_no}章 {c.title}\n{body}")
+    return "\n\n---\n\n".join(parts)
 
 
 def outline_text(novel: Novel) -> str:
@@ -127,7 +166,7 @@ def outline_text(novel: Novel) -> str:
 def written_progress_text(db: Session, novel: Novel, max_chars: int = 20000) -> str:
     chapters = (
         db.query(Chapter)
-        .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+        .filter(Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES))
         .order_by(Chapter.chapter_no.desc())
         .all()
     )

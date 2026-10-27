@@ -17,6 +17,10 @@ from app.models import AiLog, AiModel, AiProvider, SystemConfig
 FATAL_HTTP_STATUS = {401, 402, 403, 404}
 
 
+class CallbackAbort(Exception):
+    """回调（on_delta/on_stage）主动中止调用，例如用户取消任务；不能被当作网络错误吞掉"""
+
+
 class AiFatalError(RuntimeError):
     """不可恢复的 AI 调用错误（配置缺失 / 鉴权失败 / 额度不足等）"""
 
@@ -73,16 +77,33 @@ def endpoint(provider: AiProvider) -> str:
     return base + "/v1/chat/completions"
 
 
+def estimate_usage(messages: list[dict], text: str) -> dict:
+    """接口没返回 usage 时按字数粗略估算（中文约 1 字 ≈ 1 token，偏保守）"""
+    prompt_tokens = sum(len(str(m.get("content") or "")) for m in messages)
+    completion_tokens = len(text or "")
+    return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens, "_estimated": True}
+
+
 def log_call(db: Session, task_type: str, provider: AiProvider, model: AiModel,
-             usage: dict, duration_ms: int, status: str, error: str = "", prompt: str = "") -> None:
+             usage: dict, duration_ms: int, status: str, error: str = "", prompt: str = "",
+             novel_id: int = 0) -> None:
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or 0) or prompt_tokens + completion_tokens
+    cost = (prompt_tokens * float(model.price_input or 0)
+            + completion_tokens * float(model.price_output or 0)) / 1_000_000
     row = AiLog(
+        novel_id=int(novel_id or 0),
         provider=provider.name,
         model=model.name,
         task_type=task_type,
         prompt=prompt,
-        prompt_tokens=int(usage.get("prompt_tokens") or 0),
-        completion_tokens=int(usage.get("completion_tokens") or 0),
-        total_tokens=int(usage.get("total_tokens") or 0),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cost=round(cost, 6),
+        usage_estimated=1 if usage.get("_estimated") else 0,
         duration=duration_ms,
         status=status,
         error_message=error[:900],
@@ -107,8 +128,9 @@ def _system_prompt(messages: list[dict]) -> str:
 
 
 class AiClient:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, novel_id: int = 0):
         self.db = db
+        self.novel_id = novel_id  # 记入 AI 日志，用于按小说统计用量
 
     def _resolve(self):
         target = default_target(self.db)
@@ -133,6 +155,9 @@ class AiClient:
         }
         if options.get("max_tokens"):
             payload["max_tokens"] = int(options["max_tokens"])
+        if stream and options.get("include_usage", True):
+            # OpenAI 兼容接口在流式最后一个事件里返回 usage；不支持的服务会报 400，chat_stream 会去掉后重试
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
     def chat(self, messages: list[dict], options: dict | None = None) -> dict:
@@ -152,7 +177,7 @@ class AiClient:
                 resp = client.post(endpoint(provider), json=payload, headers=_headers(provider))
         except Exception as e:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id)
             raise RuntimeError(f"AI 请求失败: {e}") from e
         duration = int((time.time() - start) * 1000)
 
@@ -163,12 +188,14 @@ class AiClient:
         if resp.status_code != 200 or not isinstance(body, dict) or "choices" not in body:
             err = (body or {}).get("error", {}).get("message", "") if isinstance(body, dict) else ""
             err = err or f"HTTP {resp.status_code}"
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt, self.novel_id)
             raise _http_error(resp.status_code, str(err))
 
         text = str(body["choices"][0]["message"]["content"])
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt)
+        if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
+            usage = estimate_usage(messages, text)
+        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
         return {
             "text": text,
             "usage": usage,
@@ -189,8 +216,9 @@ class AiClient:
         start = time.time()
         try:
             # 流式：不设总超时，但设连接超时 + 读超时（长时间生成，但防止流挂起永久卡住 worker）
-            client = httpx.Client(timeout=httpx.Timeout(None, connect=20, read=300))
-            with client.stream("POST", endpoint(provider), json=payload, headers=_headers(provider)) as resp:
+            # 用 with 管理 Client，调用结束即释放连接（此前每次调用都泄漏一个连接池）
+            with httpx.Client(timeout=httpx.Timeout(None, connect=20, read=300)) as client, \
+                    client.stream("POST", endpoint(provider), json=payload, headers=_headers(provider)) as resp:
                 duration = int((time.time() - start) * 1000)
                 if resp.status_code != 200:
                     err = f"HTTP {resp.status_code}"
@@ -201,7 +229,10 @@ class AiClient:
                             err = str(body.get("error", {}).get("message", err))
                     except (ValueError, UnicodeDecodeError):
                         pass
-                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt)
+                    if resp.status_code in (400, 422) and "stream_options" in payload:
+                        # 服务不支持 stream_options：去掉后重试一次
+                        return self.chat_stream(messages, {**options, "include_usage": False}, on_delta, on_stage)
+                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt, self.novel_id)
                     raise _http_error(resp.status_code, err)
 
                 on_stage and on_stage("stream_start")
@@ -238,16 +269,20 @@ class AiClient:
                         if isinstance(delta, str) and delta:
                             text += delta
                             on_delta and on_delta(delta)
+                except CallbackAbort:
+                    raise
                 except Exception as e:
                     read_error = str(e)
                 on_stage and on_stage("stream_end")
 
                 if text == "" and read_error:
                     log_call(self.db, task_type, provider, model, usage, duration,
-                             "failed", "流式读取中断: " + read_error, prompt)
+                             "failed", "流式读取中断: " + read_error, prompt, self.novel_id)
                     raise RuntimeError(f"AI 流式输出中断: {read_error}")
 
-                log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt)
+                if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
+                    usage = estimate_usage(messages, text)
+                log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
                 return {
                     "text": text,
                     "usage": usage,
@@ -257,7 +292,11 @@ class AiClient:
                 }
         except RuntimeError:
             raise
+        except CallbackAbort:
+            duration = int((time.time() - start) * 1000)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", "已取消", prompt, self.novel_id)
+            raise
         except Exception as e:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id)
             raise RuntimeError(f"AI 请求失败: {e}") from e

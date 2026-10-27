@@ -15,6 +15,8 @@ from app.services import task_service
 
 router = APIRouter(prefix="/api/admin/ai/tasks", tags=["ai-tasks"])
 
+TERMINAL = ("success", "failed", "cancelled")
+
 PARAMS_ALLOWED = {"chapter_no", "target_words", "instruction", "remaining"}
 
 
@@ -63,6 +65,19 @@ def retry_task(task_id: int, db: Session = Depends(get_db)):
     return ok(f_task(task), "已重新入队")
 
 
+@router.post("/{task_id}/cancel")
+def cancel_task(task_id: int, payload: dict | None = None, db: Session = Depends(get_db)):
+    """取消任务；body {"after_current": true} 表示连续续写写完当前这章后停止"""
+    after_current = bool((payload or {}).get("after_current"))
+    try:
+        task = task_service.cancel(db, task_id, after_current)
+    except RuntimeError as e:
+        return fail(str(e))
+    msg = "已取消" if task.status == "cancelled" else (
+        "将在写完本章后停止连续续写" if after_current else "已请求取消，任务会在下一个检查点中止")
+    return ok(f_task(task), msg)
+
+
 @router.get("/{task_id}/stream")
 def stream(task_id: int, db: Session = Depends(get_db)):
     """订阅任务流（SSE）：增量读取 Redis 流缓冲，任务结束或超时即退出
@@ -78,7 +93,7 @@ def stream(task_id: int, db: Session = Depends(get_db)):
 
     async def generate():
         # 任务已终态：直接发完成事件
-        if status in ("success", "failed"):
+        if status in TERMINAL:
             yield "data: " + json_dumps({"type": "done", "status": status, "error_message": error_message}) + "\n\n"
             return
 
@@ -113,7 +128,7 @@ def stream(task_id: int, db: Session = Depends(get_db)):
                 if now_ts - last_check_at >= 3 and now_ts - last_event_at > 30:
                     last_check_at = now_ts
                     fresh = await asyncio.to_thread(_task_status, task_id)
-                    if fresh and fresh[0] in ("success", "failed"):
+                    if fresh and fresh[0] in TERMINAL:
                         yield "data: " + json_dumps({
                             "type": "done", "status": fresh[0], "error_message": fresh[1],
                         }) + "\n\n"

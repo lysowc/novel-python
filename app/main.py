@@ -9,7 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import AuthError, require_admin
 from app.config import PROJECT_ROOT, settings
-from app.routers import admin, ai_tasks, front
+from app.routers import admin, ai_tasks, export, front, stats, versions
 
 app = FastAPI(title="AI 小说工坊", docs_url=None, redoc_url=None)
 
@@ -44,6 +44,9 @@ app.include_router(admin.login_router)
 # 后台（需登录）
 app.include_router(admin.router, dependencies=[Depends(require_admin)])
 app.include_router(ai_tasks.router, dependencies=[Depends(require_admin)])
+app.include_router(versions.router, dependencies=[Depends(require_admin)])
+app.include_router(stats.router, dependencies=[Depends(require_admin)])
+app.include_router(export.router, dependencies=[Depends(require_admin)])
 
 # ============ SPA 静态资源与兜底 ============
 

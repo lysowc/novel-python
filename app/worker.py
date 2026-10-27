@@ -52,7 +52,8 @@ def main() -> None:
         try:
             r = connect_redis()
             try:
-                item = r.blpop(QUEUE_KEY, timeout=30)
+                # 入队用 LPUSH，这里从右端取 → 先进先出（此前 BLPOP 是后进先出，任务多时最早的会一直排不到）
+                item = r.brpop(QUEUE_KEY, timeout=30)
             finally:
                 r.close()
             if isinstance(item, (list, tuple)) and len(item) >= 2:

@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 
 from app.helpers import now, word_count
 from app.models import (
-    Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting, SystemConfig,
+    CHAPTER_WRITTEN_STATUSES, Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting, SystemConfig,
 )
 from app.services import context_builder, memory as memory_service
-from app.services import memory_store, prompt_service, retrieval, task_service
+from app.services import chapter_versions, memory_store, prompt_service, retrieval, task_service
 from app.services.ai_client import AiClient, config_value
 
 
@@ -210,14 +210,18 @@ class AiService:
             .first()
         )
         if not chapter:
-            chapter = Chapter(novel_id=novel.id, chapter_no=chapter_no)
+            # 开启「AI 章节需审阅」时新章节先存为草稿，读者看不到，审阅后再发布
+            auto_publish = int(float(config_value(self.db, "chapter_auto_publish", 1))) > 0
+            chapter = Chapter(novel_id=novel.id, chapter_no=chapter_no, created_at=now(),
+                              status="published" if auto_publish else "draft")
             self.db.add(chapter)
+        else:
+            chapter_versions.save_version(self.db, chapter, "regenerate")  # 旧版本可在「历史版本」里恢复
         chapter.title = context_builder.outline_title(novel, chapter_no)
         chapter.content = content
         chapter.summary = ""  # 旧摘要对应旧正文，清空，由下一步重新生成
         chapter.word_count = word_count(content)
-        chapter.status = "published"
-        chapter.updated_at = now()
+        chapter.updated_at = now()  # 重新生成保留原状态（已发布的不会因重写而对读者消失）
         # 记下断点：后续步骤失败时，重试只补做摘要/记忆，不会重新生成或多写一章
         task.params = {**params, "resume": {"chapter_no": chapter_no, "memory_base": mem_base.source}}
         self.db.commit()
@@ -250,9 +254,11 @@ class AiService:
 
     def _retry_once(self, fn):
         """摘要/记忆这类后处理偶发失败（超时、JSON 不合法）时自动再试一次；配置/鉴权错误不重试"""
-        from app.services.ai_client import is_fatal
+        from app.services.ai_client import CallbackAbort, is_fatal
         try:
             return fn()
+        except CallbackAbort:
+            raise
         except Exception as e:
             if is_fatal(e):
                 raise
@@ -340,7 +346,7 @@ class AiService:
         if chapter is None:
             chapter = (
                 self.db.query(Chapter)
-                .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+                .filter(Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES))
                 .order_by(Chapter.chapter_no.desc())
                 .first()
             )
@@ -374,6 +380,8 @@ class AiService:
         if not data:
             raise RuntimeError("记忆更新失败：AI 未返回合法 JSON")
         data = memory_service.normalize_memory(data)
+        # 增量合并：AI 漏掉的未回收伏笔、物品、世界观事实补回，删掉的人物移入名册
+        data, restored = memory_service.merge_memory(base.content, data)
         new_content = json.dumps(data, ensure_ascii=False, indent=2)
 
         no = int(chapter.chapter_no)
@@ -384,6 +392,8 @@ class AiService:
         memory_store.save_snapshot(self.db, novel.id, no, new_content)
 
         warning = ""
+        if restored:
+            print(f"[memory] 第{no}章记忆补回 {len(restored)} 条：" + "；".join(restored[:5]))
         is_latest = no >= memory_store.max_chapter_no(self.db, novel.id)
         if is_latest:
             memory_row = self.db.query(NovelMemory).filter(NovelMemory.novel_id == novel.id).first()
@@ -405,7 +415,7 @@ class AiService:
         on_stage and on_stage("request", "AI 正在审校大纲与正文的一致性...")
         last = (
             self.db.query(Chapter)
-            .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+            .filter(Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES))
             .order_by(Chapter.chapter_no.desc())
             .first()
         )
@@ -418,6 +428,15 @@ class AiService:
             + "\n\n【已写章节进度】\n" + context_builder.written_progress_text(self.db, novel)
             + "\n\n【小说记忆（当前状态）】\n" + context_builder.memory_text(novel)
         )
+        # 抽查最近几章正文：只看摘要发现不了"断了的手又能拔剑"这类正文层面的矛盾
+        sample = context_builder.recent_text_sample(self.db, novel)
+        if sample:
+            user += (
+                "\n\n【最近章节正文（抽查）】\n" + sample
+                + "\n\n请特别检查以上正文与小说记忆、已写章节进度之间的细节矛盾"
+                  "（人物伤势/能力/位置、物品归属、时间先后、已死亡或离场的人物再次出现等），"
+                  "并在 related_chapters 中给出具体章号。"
+            )
         result = self.client.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],

@@ -1,7 +1,9 @@
 """AI 任务队列：Redis List + 独立 worker 进程消费（与 PHP 版协议一致）"""
 import json
 import threading
+import time
 import uuid
+from contextlib import contextmanager
 
 import redis
 from sqlalchemy.orm import Session
@@ -10,6 +12,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.helpers import json_dumps, now
 from app.models import AiTask, Novel
+from app.services.ai_client import CallbackAbort
 
 QUEUE_KEY = "ai:queue"
 STREAM_PREFIX = "ai:stream:"
@@ -131,6 +134,95 @@ def novel_busy(db: Session, novel_id: int) -> bool:
     ).first() is not None
 
 
+@contextmanager
+def novel_guard(db: Session, novel_id: int, action: str = "修改"):
+    """API 侧修改小说内容（删除/恢复版本等）时使用：有任务排队/执行就拒绝，并在操作期间持有小说锁，
+    保证 worker 不会同时开始这本小说的任务。拒绝时抛 RuntimeError（消息可直接展示给用户）。"""
+    if novel_busy(db, novel_id):
+        raise RuntimeError(f"该小说有 AI 任务正在排队或执行，请等任务结束后再{action}")
+    lock = NovelLock(novel_id)
+    try:
+        acquired = lock.acquire()
+    except Exception:
+        raise RuntimeError(f"任务队列（Redis）不可用，暂时无法确认是否有任务在执行，请稍后再{action}")
+    if not acquired:
+        raise RuntimeError(f"该小说有 AI 任务正在执行，请稍后再{action}")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+# ---------- 取消 ----------
+
+CANCEL_PREFIX = "ai:cancel:"        # 立即取消执行中的任务
+STOP_CHAIN_PREFIX = "ai:stopchain:"  # 连续续写：写完当前这章后停止
+CANCEL_CHECK_INTERVAL = 1.0
+
+
+class TaskCancelled(CallbackAbort):
+    """用户取消了正在执行的任务"""
+
+
+def cancel(db: Session, task_id: int, after_current: bool = False) -> AiTask:
+    """取消任务。
+
+    - 排队中：直接标记为已取消（worker 领取时会跳过）
+    - 执行中：after_current=False → 发出取消信号，worker 在下一个检查点（流式输出每秒检查）中止；
+              after_current=True → 只对连续续写有效：写完当前这章后不再安排下一章
+    """
+    task = db.query(AiTask).filter(AiTask.id == task_id).first()
+    if not task:
+        raise RuntimeError("任务不存在")
+    if task.status == "pending":
+        updated = (
+            db.query(AiTask).filter(AiTask.id == task_id, AiTask.status == "pending")
+            .update({"status": "cancelled", "error_message": "已取消", "updated_at": now()},
+                    synchronize_session=False)
+        )
+        db.commit()
+        if updated:
+            finish(task_id, "cancelled", "已取消")
+            db.refresh(task)
+            return task
+        db.refresh(task)  # 恰好被 worker 领取，按执行中处理
+    if task.status != "running":
+        raise RuntimeError("任务已结束，无需取消")
+    r = connect_redis()
+    try:
+        key = (STOP_CHAIN_PREFIX if after_current else CANCEL_PREFIX) + str(task_id)
+        r.setex(key, STREAM_TTL, "1")
+    finally:
+        r.close()
+    publish(task_id, {
+        "type": "status", "stage": "cancel_requested",
+        "message": "已请求停止：写完本章后不再续写" if after_current else "已请求取消，正在中止…",
+    })
+    return task
+
+
+def _flag(prefix: str, task_id: int) -> bool:
+    try:
+        r = connect_redis()
+        try:
+            return bool(r.exists(prefix + str(task_id)))
+        finally:
+            r.close()
+    except Exception:
+        return False
+
+
+def _clear_flags(task_id: int) -> None:
+    try:
+        r = connect_redis()
+        try:
+            r.delete(CANCEL_PREFIX + str(task_id), STOP_CHAIN_PREFIX + str(task_id))
+        finally:
+            r.close()
+    except Exception:
+        pass
+
+
 def _push_task(task_id: int) -> None:
     r = connect_redis()
     try:
@@ -217,8 +309,8 @@ def retry(db: Session, task_id: int) -> AiTask:
     task = db.query(AiTask).filter(AiTask.id == task_id).first()
     if not task:
         raise RuntimeError("任务不存在")
-    if task.status != "failed":
-        raise RuntimeError("只有失败的任务才能重试")
+    if task.status not in ("failed", "cancelled"):
+        raise RuntimeError("只有失败或已取消的任务才能重试")
     running = (
         db.query(AiTask)
         .filter(AiTask.ref_id == task.ref_id, AiTask.ref_type == task.ref_type,
@@ -243,6 +335,7 @@ def retry(db: Session, task_id: int) -> AiTask:
     task.updated_at = now()
     db.commit()
     _clear_stream(task.id)  # 清掉上一次的进度事件，否则进度框会先回放出旧的"失败"
+    _clear_flags(task.id)
     _push_task(task.id)
     publish(task.id, {"type": "status", "status": "pending", "message": "任务已重新入队"})
     return task
@@ -252,7 +345,7 @@ def _defer(task_id: int) -> None:
     """拿不到小说锁时把任务放回队尾，稍后再试（任务保持 pending）"""
     r = connect_redis()
     try:
-        r.rpush(QUEUE_KEY, str(task_id))  # 队列从左端弹出，rpush 放到最后
+        r.lpush(QUEUE_KEY, str(task_id))  # worker 从右端取（先进先出），lpush 放到队尾
     finally:
         r.close()
 
@@ -299,11 +392,23 @@ def execute(task_id: int) -> bool:
                     raise RuntimeError("小说不存在")
 
                 ai = AiService(db)
+                ai.client.novel_id = novel.id  # AI 日志按小说统计用量
+
+                last_check = [0.0]
+
+                def check_cancel(force: bool = False) -> None:
+                    now_ts = time.time()
+                    if force or now_ts - last_check[0] >= CANCEL_CHECK_INTERVAL:
+                        last_check[0] = now_ts
+                        if _flag(CANCEL_PREFIX, task_id):
+                            raise TaskCancelled()
 
                 def on_stage(stage: str, message: str = "") -> None:
+                    check_cancel(force=True)
                     publish(task_id, {"type": "status", "stage": stage, "message": message})
 
                 def on_delta(delta: str) -> None:
+                    check_cancel()
                     publish(task_id, {"type": "chunk", "content": delta})
 
                 if task.task_type == "generate_setting":
@@ -315,7 +420,16 @@ def execute(task_id: int) -> bool:
                 elif task.task_type == "generate_summary":
                     ai.generate_summary_for_chapter(novel, task, on_stage)
                 elif task.task_type == "update_memory":
-                    warning = ai.update_memory(novel)
+                    # 可指定章号：用某一章（如刚恢复/手动修改过的章节）重新计算这一章的记忆
+                    target = None
+                    target_no = int((task.params or {}).get("chapter_no") or 0)
+                    if target_no:
+                        from app.models import Chapter
+                        target = db.query(Chapter).filter(
+                            Chapter.novel_id == novel.id, Chapter.chapter_no == target_no).first()
+                        if not target:
+                            raise RuntimeError(f"第{target_no}章不存在")
+                    warning = ai.update_memory(novel, target)
                     on_stage("done", "小说记忆更新完成" + (f"（{warning}）" if warning else ""))
                 elif task.task_type == "consistency_check":
                     ai.check_consistency(novel, task, on_stage)
@@ -331,11 +445,24 @@ def execute(task_id: int) -> bool:
                 db.rollback()
                 task = db.query(AiTask).filter(AiTask.id == task_id).first()
 
+            cancelled = isinstance(error, TaskCancelled) or _is_cancelled(error)
+            if cancelled and task is not None:
+                task.status = "cancelled"
+                task.error_message = "已取消" + (
+                    f"（第{task.params['resume']['chapter_no']}章正文已保存，摘要/记忆未完成，可重试补做）"
+                    if isinstance((task.params or {}).get("resume"), dict) else "")
+                task.updated_at = now()
+                db.commit()
+                finish(task_id, "cancelled", task.error_message)
+                _clear_flags(task_id)
+                return True
+
             # 3. 连续续写：可恢复的失败跳过该章继续；配置/鉴权类错误或连续多章失败则停止
             stop_note = ""
             if task is not None:
                 try:
                     stop_note = _continue_chain(db, task, error, is_fatal(error))
+                    db.commit()  # 续链可能更新了 params（chain_stopped）
                 except Exception as e:
                     print("[worker] 续链失败:", e)
 
@@ -349,11 +476,23 @@ def execute(task_id: int) -> bool:
                 finish(task_id, "failed", message)
             else:
                 finish(task_id, "success")
+            _clear_flags(task_id)
             return True
         finally:
             lock.release()
     finally:
         db.close()
+
+
+def _is_cancelled(exc: BaseException | None) -> bool:
+    """取消信号可能被业务代码包装成 RuntimeError（raise ... from e），沿异常链查找"""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, TaskCancelled):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 def _continue_chain(db: Session, task: AiTask, error: Exception | None, fatal: bool) -> str:
@@ -370,6 +509,11 @@ def _continue_chain(db: Session, task: AiTask, error: Exception | None, fatal: b
     remaining = int(params.get("remaining") or 0)
     if remaining <= 0:
         return ""
+    if _flag(STOP_CHAIN_PREFIX, task.id):
+        publish(task.id, {"type": "status", "stage": "auto_continue_stopped",
+                          "message": f"已按要求停止连续续写（后续 {remaining} 章未生成）"})
+        task.params = {**params, "chain_stopped": True}
+        return "" if error is None else f"（已按要求停止连续续写，后续 {remaining} 章未生成）"
 
     fail_streak = int(params.get("fail_streak") or 0) + 1 if error is not None else 0
     reason = ""
