@@ -24,14 +24,17 @@ def memory_text(novel: Novel) -> str:
     return memory_service.to_context_text(memory.content)
 
 
-def summaries_text(db: Session, novel: Novel) -> str:
+def published_chapters(db: Session, novel: Novel, before_no: int | None = None):
+    """已发布章节（章号倒序）；指定 before_no 时只取它之前的章节（生成/重写第 N 章时不能看到第 N 章及之后）"""
+    q = db.query(Chapter).filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+    if before_no is not None:
+        q = q.filter(Chapter.chapter_no < before_no)
+    return q.order_by(Chapter.chapter_no.desc())
+
+
+def summaries_text(db: Session, novel: Novel, before_no: int | None = None) -> str:
     cap = get_config_int(db, "context_summary_max_chars", 12000)
-    chapters = (
-        db.query(Chapter)
-        .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
-        .order_by(Chapter.chapter_no.desc())
-        .all()
-    )
+    chapters = published_chapters(db, novel, before_no).all()
     lines = []
     length = 0
     for chapter in chapters:
@@ -45,17 +48,11 @@ def summaries_text(db: Session, novel: Novel) -> str:
     return "\n\n".join(reversed(lines))
 
 
-def recent_chapters_text(db: Session, novel: Novel) -> str:
+def recent_chapters_text(db: Session, novel: Novel, before_no: int | None = None) -> str:
     n = get_config_int(db, "context_max_recent_chapters", 5)
     if n <= 0:
         return "（未启用最近章节正文）"
-    chapters = (
-        db.query(Chapter)
-        .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
-        .order_by(Chapter.chapter_no.desc())
-        .limit(n)
-        .all()
-    )[::-1]
+    chapters = published_chapters(db, novel, before_no).limit(n).all()[::-1]
     if not chapters:
         return "（暂无正文）"
     parts = [f"第{c.chapter_no}章 {c.title}\n\n{c.content}" for c in chapters]
@@ -84,19 +81,22 @@ def outline_title(novel: Novel, chapter_no: int) -> str:
 
 def build_chapter_context(
     db: Session, novel: Novel, chapter_no: int, instruction: str = "", retrieved: list[dict] | None = None,
+    memory: str | None = None,
 ) -> str:
+    """组装第 chapter_no 章的生成上下文：摘要/正文只取本章之前的章节；
+    memory 为"本章开始前"的记忆文本（见 memory_store.memory_before），不传则用全书最新记忆"""
     # 惰性导入，避免模块级循环依赖
     from app.services.retrieval import render_retrieved
 
     sections = [
         ("【小说设定】", setting_text(novel)),
-        ("【小说记忆（当前状态）】", memory_text(novel)),
-        ("【历史章节摘要】", summaries_text(db, novel)),
+        ("【小说记忆（当前状态）】", memory if memory is not None else memory_text(novel)),
+        ("【历史章节摘要】", summaries_text(db, novel, chapter_no)),
     ]
     retrieved_text = render_retrieved(retrieved or [])
     if retrieved_text:
         sections.append(("【相关历史章节（检索召回）】", retrieved_text))
-    sections.append(("【最近章节正文】", recent_chapters_text(db, novel)))
+    sections.append(("【最近章节正文】", recent_chapters_text(db, novel, chapter_no)))
     sections.append(("【本章大纲】", outline_target(novel, chapter_no)))
 
     parts = [f"{label}\n{content}" for label, content in sections]

@@ -197,6 +197,17 @@ class NovelMemory(Base):
         return to_context_text(self.content)
 
 
+class NovelMemorySnapshot(Base):
+    """第 chapter_no 章结束时的小说记忆快照"""
+    __tablename__ = "novel_memory_snapshot"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    chapter_no = Column(Integer, nullable=False)
+    content = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
 class AiTask(Base):
     __tablename__ = "ai_task"
     id = Column(Integer, primary_key=True, autoincrement=True)

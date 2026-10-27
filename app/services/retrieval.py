@@ -30,16 +30,14 @@ def get_config_int(db: Session, key: str, default: int) -> int:
         return default
 
 
-def in_context_chapter_nos(db: Session, novel: Novel) -> set[int]:
-    """已经处于上下文中的章节号：滚动摘要窗口 + 最近 N 章正文"""
+def in_context_chapter_nos(db: Session, novel: Novel, before_no: int | None = None) -> set[int]:
+    """已经处于上下文中的章节号：滚动摘要窗口 + 最近 N 章正文（与 context_builder 取同一范围）"""
     cap = get_config_int(db, "context_summary_max_chars", 12000)
     recent_n = get_config_int(db, "context_max_recent_chapters", 5)
-    chapters = (
-        db.query(Chapter)
-        .filter(Chapter.novel_id == novel.id, Chapter.status == "published")
-        .order_by(Chapter.chapter_no.desc())
-        .all()
-    )
+    q = db.query(Chapter).filter(Chapter.novel_id == novel.id, Chapter.status == "published")
+    if before_no is not None:
+        q = q.filter(Chapter.chapter_no < before_no)
+    chapters = q.order_by(Chapter.chapter_no.desc()).all()
     nos: set[int] = set()
     length = 0
     windowed = 0
@@ -55,19 +53,22 @@ def in_context_chapter_nos(db: Session, novel: Novel) -> set[int]:
     return nos
 
 
-def build_query(db: Session, novel: Novel, chapter_no: int, instruction: str = "") -> str:
+def build_query(db: Session, novel: Novel, chapter_no: int, instruction: str = "",
+                memory_text: str | None = None) -> str:
     parts = []
     if instruction.strip():
         parts.append(instruction.strip())
     parts.append(_outline_target(novel, chapter_no))
-    memory = novel.memory
-    if memory and (memory.content or "").strip():
-        parts.append(memory.to_context_text()[:2000])
+    if memory_text is None:
+        memory = novel.memory
+        memory_text = memory.to_context_text() if memory and (memory.content or "").strip() else ""
+    if memory_text.strip():
+        parts.append(memory_text[:2000])
     return "\n".join(parts)
 
 
 def related_chapters(
-    db: Session, novel: Novel, chapter_no: int, instruction: str = "",
+    db: Session, novel: Novel, chapter_no: int, instruction: str = "", memory_text: str | None = None,
 ) -> list[dict]:
     """召回与当前章节最相关的历史章节（BM25 排序）"""
     from rank_bm25 import BM25Okapi
@@ -78,11 +79,11 @@ def related_chapters(
     if limit <= 0:
         return []
 
-    query_tokens = _tokens(build_query(db, novel, chapter_no, instruction))
+    query_tokens = _tokens(build_query(db, novel, chapter_no, instruction, memory_text))
     if not query_tokens:
         return []
 
-    exclude = in_context_chapter_nos(db, novel)
+    exclude = in_context_chapter_nos(db, novel, chapter_no)
     candidates = (
         db.query(Chapter)
         .filter(

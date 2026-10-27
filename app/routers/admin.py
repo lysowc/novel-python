@@ -14,7 +14,7 @@ from app.models import (
     Admin, AiLog, AiModel, AiProvider, AiTask, Category, Chapter, ConsistencyReport,
     Idea, IdeaChat, Novel, NovelMemory, NovelSetting, Prompt, SystemConfig,
 )
-from app.services import prompt_service, task_service
+from app.services import memory_store, prompt_service, task_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -327,12 +327,27 @@ def novel_destroy(nid: int, db: Session = Depends(get_db)):
     n = db.query(Novel).filter(Novel.id == nid).first()
     if not n:
         return fail("小说不存在")
-    db.query(Chapter).filter(Chapter.novel_id == nid).delete()
-    db.query(NovelSetting).filter(NovelSetting.novel_id == nid).delete()
-    db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete()
-    db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete()
-    db.delete(n)
-    db.commit()
+    if task_service.novel_busy(db, nid):
+        return fail("该小说有 AI 任务正在排队或执行，请等任务结束后再删除")
+    # 持有小说锁期间删除：worker 此刻无法开始这本小说的任务，避免写入"孤儿"章节
+    lock = task_service.NovelLock(nid)
+    try:
+        if not lock.acquire():
+            return fail("该小说有 AI 任务正在执行，请稍后再删除")
+    except Exception:
+        return fail("任务队列（Redis）不可用，暂时无法确认是否有任务在执行，请稍后再试")
+    try:
+        db.query(Chapter).filter(Chapter.novel_id == nid).delete()
+        db.query(NovelSetting).filter(NovelSetting.novel_id == nid).delete()
+        db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete()
+        db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete()
+        memory_store.delete_snapshots(db, nid)
+        db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)
+        db.query(Idea).filter(Idea.novel_id == nid).update({"novel_id": None}, synchronize_session=False)
+        db.delete(n)
+        db.commit()
+    finally:
+        lock.release()
     return ok(None, "已删除")
 
 
@@ -423,6 +438,10 @@ def novel_memory(nid: int, payload: dict | None = None, request: Request = None,
             db.add(memory)
         memory.content = content
         memory.updated_at = now()
+        # 手动修改的记忆同步为最后一章的快照，之后重写下一章时也能用上
+        last_no = memory_store.max_chapter_no(db, nid)
+        if last_no > 0:
+            memory_store.save_snapshot(db, nid, last_no, content)
         db.commit()
         return ok({"content": content, "updated_at": dt_str(memory.updated_at)}, "记忆已保存")
     return ok({"content": memory.content if memory else "", "updated_at": dt_str(memory.updated_at if memory else None)})
@@ -522,6 +541,7 @@ def chapter_destroy(cid: int, db: Session = Depends(get_db)):
     if not c:
         return fail("章节不存在")
     novel_id = c.novel_id
+    memory_store.delete_snapshots(db, novel_id, c.chapter_no)
     db.delete(c)
     db.commit()
     n = db.query(Novel).filter(Novel.id == novel_id).first()
