@@ -25,6 +25,11 @@ AI 小说工坊的 **Python 3.12 + FastAPI** 后端 + 自带前端（Vue 3 + Tai
 - **审校读正文**：一致性审校额外抽查最近 3 章正文，检查细节矛盾
 - **检索正文片段**：除摘要外，对历史正文按段做 BM25 检索并与摘要排名融合（RRF），召回时附上相关原文片段
 - **上下文总长度预算**：`context_max_chars`（默认 60000 字符）超出时依次压缩最近正文、召回章节、摘要窗口
+- **记忆重建**：「记忆」页可从第 N 章起逐章重算记忆（重写中间章节后让后续跟上；旧小说从第 1 章完整重建）
+- **审校定位**：审校报告里的章号可点开查看，并「按建议重写本章」（旧版本自动进历史版本）
+- **按模型上下文窗口**：在「AI 配置」填写模型上下文窗口后，自动按「窗口 − 输出 − 预留」限制上下文
+- **安全**：登录失败限流（同 IP+账号 10 分钟 5 次）；默认 SESSION_SECRET / admin123 密码在仪表盘和启动日志里提醒
+- **与 PHP 版共用 Redis**：PHP 的 worker 不认 Python 版的小说锁与取消信号，两版 worker 同时运行时可在 `.env` 设 `AI_QUEUE_KEY` 使用独立队列
 - **多进程 worker**：默认 3 个进程并行，`WORKERS=N` 调整；同一本小说由 Redis 锁（`ai:lock:novel:{id}`，心跳续期）保证串行、不同小说并行，任务领取为原子操作不会重复执行；启动时自动恢复卡死任务并清除残留锁
 - **AI 日志记录 Prompt**：每次调用把实际使用的 system prompt 写入日志（`ai_log.prompt`），后台「AI 日志」可查看
 
@@ -62,7 +67,7 @@ bash scripts/stop.sh
 
 ## 数据库迁移
 
-> 升级到新版本后先执行一次 `.venv/bin/python -m commands.migrate`（0004 记忆快照、0005 章节版本、0006 用量统计），再重启服务。
+> 升级到新版本后先执行一次 `.venv/bin/python -m commands.migrate`（0004 记忆快照、0005 章节版本、0006 用量统计、0007 模型上下文窗口），再重启服务。
 
 ```bash
 # 应用未执行的迁移（migrations/*.sql，执行记录在 migrations 表）
@@ -123,6 +128,12 @@ pnpm build            # 构建产物直接输出到 ../static/（vite 已配置�
 ## 验收与自测
 
 ```bash
+# 单元/接口测试（sqlite + fakeredis + 假 AI，不需要 MySQL / Redis / 真实模型）
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+
+```bash
 # 三大升级回归自测（检索召回/记忆 v2/审校规整，自动造数并清理）
 .venv/bin/python -m commands.verify
 
@@ -154,16 +165,17 @@ app/                    FastAPI 后端
   config.py             pydantic-settings（读 .env）
   db.py / models.py     SQLAlchemy 引擎 / 全部 15 张表模型
   auth.py helpers.py    会话鉴权 / 响应包装与工具
-  routers/              front（前台 API）/ admin（后台 API + 点子聊天 SSE）/ ai_tasks（任务 + SSE 流）
+  routers/              front（前台 API）/ admin/（后台 API，按领域拆分）/ ai_tasks（任务 + SSE 流）
+                        versions（章节历史版本）/ stats（用量统计）/ export（整本导出）
   services/             ai_client / ai_service / context_builder / retrieval / memory /
                         prompt_service / prompt_defaults / task_service
   worker.py             AI 任务消费进程（独立进程）
 commands/               migrate（迁移）/ install（初始化）/ verify（回归自测）
-migrations/             0001_init.sql … 0006_usage_stats.sql
+migrations/             0001_init.sql … 0007_model_context_window.sql
 web/                    Vue 3 + Tailwind 前端源码（构建产物 → static/）
 static/                 前端构建产物（后端直接服务，gitignore）
 scripts/                start.sh / stop.sh（一键启动/停止）
-tests/                  mock_ai_server.py / acceptance.sh
+tests/                  pytest 测试 / mock_ai_server.py / acceptance.sh
 runtime/                运行日志与 pid（gitignore）
 requirements.txt        全部 Python 依赖（精确锁定）
 ```

@@ -1,0 +1,5 @@
+# 测试依赖（不影响线上运行）：.venv/bin/pip install -r requirements-dev.txt
+# 运行测试：.venv/bin/python -m pytest -q   （sqlite + fakeredis + 假 AI，不需要 MySQL/Redis/真实模型）
+-r requirements.txt
+pytest==9.1.1
+fakeredis[lua]==2.40.0
