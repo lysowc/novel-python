@@ -38,7 +38,7 @@ const taskStatusMap: Record<TaskStatus, { label: string; cls: string; icon: type
 const taskTypeLabel: Record<string, string> = {
   generate_setting: '生成设定', generate_outline: '生成大纲', generate_chapter: '生成章节',
   continue_chapter: '续写章节', regenerate_chapter: '重新生成', generate_summary: '生成摘要',
-  update_memory: '更新记忆', idea_chat: '点子聊天', idea_save: '点子保存',
+  update_memory: '更新记忆', rebuild_memory: '重建记忆', idea_chat: '点子聊天', idea_save: '点子保存',
   consistency_check: '一致性审校',
 }
 
@@ -69,6 +69,13 @@ onMounted(load)
 
 <template>
   <div class="space-y-8">
+    <div
+      v-if="data?.security_warnings?.length"
+      class="space-y-1.5 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm"
+    >
+      <p class="font-medium text-destructive">安全提醒</p>
+      <p v-for="(w, i) in data.security_warnings" :key="i" class="text-muted-foreground">{{ w }}</p>
+    </div>
     <!-- 统计卡片 -->
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-5 xl:grid-cols-6">
       <div

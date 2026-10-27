@@ -25,7 +25,7 @@ const fields: { key: string; label: string; type: 'text' | 'number'; placeholder
   { key: 'retrieval_max_chapters', label: '召回章节数', type: 'number', placeholder: '5', hint: '每章生成时召回的相关历史章节数量', step: 1 },
   { key: 'consistency_auto_interval', label: '自动审校间隔（章）', type: 'number', placeholder: '0', hint: '每 N 章自动运行一致性审校（0=关闭）', step: 1 },
   { key: 'chapter_auto_publish', label: 'AI 新章节自动发布', type: 'number', placeholder: '1', hint: '1=生成后直接发布；0=先存为草稿，读者不可见，在章节页审阅后发布', step: 1 },
-  { key: 'context_max_chars', label: '上下文总字符上限', type: 'number', placeholder: '60000', hint: '生成章节时发给 AI 的上下文总长度上限，超出时依次压缩最近正文、召回章节和摘要；按模型上下文窗口调整', step: 1000 },
+  { key: 'context_max_chars', label: '上下文总字符上限', type: 'number', placeholder: '60000', hint: '生成章节时发给 AI 的上下文总长度上限，超出时依次压缩最近正文、召回章节和摘要；在「AI 配置」填写模型上下文窗口后会自动取更小的值', step: 1000 },
 ]
 
 async function load() {

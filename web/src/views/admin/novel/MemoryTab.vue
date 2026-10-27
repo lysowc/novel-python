@@ -2,7 +2,10 @@
 import { Button } from '@/components/ui/button'
 
 import { computed, onMounted, ref } from 'vue'
-import { Braces, ListTree, Save, Sparkles } from '@lucide/vue'
+import { Braces, History, ListTree, Save, Sparkles } from '@lucide/vue'
+import { Input } from '@/components/ui/input'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import StreamDialog from '@/components/common/StreamDialog.vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
 import { fetchNovelMemory, saveNovelMemory } from '@/api'
@@ -82,6 +85,15 @@ async function aiUpdate() {
   })
 }
 
+// 从第 N 章起重建记忆（重写中间章节后让后续记忆跟上；旧小说从第 1 章完整重建）
+const rebuildFrom = ref(1)
+const rebuildConfirm = ref(false)
+const rebuildOpen = ref(false)
+function startRebuild() {
+  rebuildConfirm.value = false
+  rebuildOpen.value = true
+}
+
 onMounted(load)
 </script>
 
@@ -123,6 +135,36 @@ onMounted(load)
         </Button>
       </div>
     </div>
+
+    <div class="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-dashed px-4 py-2.5 text-sm">
+      <History class="size-4 text-muted-foreground" />
+      <span class="text-muted-foreground">从第</span>
+      <Input v-model.number="rebuildFrom" type="number" min="1" class="h-8 w-20" />
+      <span class="text-muted-foreground">章起逐章重建记忆</span>
+      <Button size="sm" variant="outline" :disabled="running || rebuildOpen" @click="rebuildConfirm = true">重建</Button>
+      <span class="basis-full text-xs text-muted-foreground sm:basis-auto">
+        重写中间章节后用它让后续记忆跟上；每章一次 AI 调用
+      </span>
+    </div>
+
+    <ConfirmDialog
+      :open="rebuildConfirm"
+      title="重建记忆"
+      :description="`将从第 ${rebuildFrom} 章起逐章重新计算记忆，并覆盖当前记忆（包括你在这里手动改过的内容）。章节多时耗时较长，可随时取消。`"
+      confirm-text="开始重建"
+      @update:open="(v: boolean) => (rebuildConfirm = v)"
+      @confirm="startRebuild"
+    />
+    <StreamDialog
+      v-if="rebuildOpen"
+      v-model:open="rebuildOpen"
+      :title="`重建记忆 · 从第 ${rebuildFrom} 章起`"
+      task-type="rebuild_memory"
+      :novel-id="novelId"
+      :params="{ chapter_no: Math.max(1, Number(rebuildFrom) || 1) }"
+      mode="stream"
+      @done="() => { load(); toast.success('记忆重建完成') }"
+    />
 
     <LoadingState v-if="loading" variant="table" :rows="2" />
 

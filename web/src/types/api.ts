@@ -127,6 +127,8 @@ export interface AiModel {
   name: string
   display_name: string
   max_tokens: number
+  /** 模型上下文窗口（tokens），0 = 未填写 */
+  context_window?: number
   temperature: number
   /** 每百万输入 / 输出 tokens 的价格（元），用于费用统计 */
   price_input?: number
@@ -184,6 +186,7 @@ export type TaskType =
   | 'regenerate_chapter'
   | 'generate_summary'
   | 'update_memory'
+  | 'rebuild_memory'
   | 'consistency_check'
 
 export interface AiTask {
@@ -329,6 +332,8 @@ export interface Dashboard {
   today_chapters: number
   recent_tasks: AiTask[]
   recent_logs: AiLog[]
+  /** 需要管理员处理的安全配置提醒 */
+  security_warnings?: string[]
 }
 
 export interface HomeData {

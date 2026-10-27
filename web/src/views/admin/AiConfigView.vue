@@ -33,7 +33,7 @@ const providerForm = ref({ name: '', base_url: '', api_key: '', status: 1 })
 const modelOpen = ref(false)
 const modelEditing = ref<AiModel | null>(null)
 const modelSaving = ref(false)
-const modelForm = ref({ provider_id: 0, name: '', display_name: '', max_tokens: 8192, temperature: 0.8, price_input: 0, price_output: 0, status: 1 })
+const modelForm = ref({ provider_id: 0, name: '', display_name: '', max_tokens: 8192, context_window: 0, temperature: 0.8, price_input: 0, price_output: 0, status: 1 })
 
 // 删除
 const deletingProvider = ref<AiProvider | null>(null)
@@ -112,7 +112,7 @@ function openModelCreate() {
   modelEditing.value = null
   modelForm.value = {
     provider_id: providers.value[0]?.id ?? 0,
-    name: '', display_name: '', max_tokens: 8192, temperature: 0.8, price_input: 0, price_output: 0, status: 1,
+    name: '', display_name: '', max_tokens: 8192, context_window: 0, temperature: 0.8, price_input: 0, price_output: 0, status: 1,
   }
   modelOpen.value = true
 }
@@ -121,7 +121,7 @@ function openModelEdit(m: AiModel) {
   modelEditing.value = m
   modelForm.value = {
     provider_id: m.provider_id, name: m.name, display_name: m.display_name,
-    max_tokens: m.max_tokens, temperature: m.temperature,
+    max_tokens: m.max_tokens, context_window: m.context_window ?? 0, temperature: m.temperature,
     price_input: m.price_input ?? 0, price_output: m.price_output ?? 0, status: Number(m.status),
   }
   modelOpen.value = true
@@ -435,6 +435,11 @@ onMounted(load)
               <Label>temperature（0-2）</Label>
               <Input v-model.number="modelForm.temperature" type="number" min="0" max="2" step="0.1" />
             </div>
+          </div>
+          <div class="space-y-1.5">
+            <Label>上下文窗口（tokens）</Label>
+            <Input v-model.number="modelForm.context_window" type="number" min="0" step="1000" placeholder="如 64000；不填为 0" />
+            <p class="text-xs text-muted-foreground">填写后，生成章节时按「窗口 − 输出长度 − 预留」自动限制上下文长度（与系统设置里的上限取较小值）</p>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1.5">
