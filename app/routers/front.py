@@ -1,5 +1,6 @@
 """前台 API（/api/*，无需登录）——与 PHP 版契约一致"""
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -11,13 +12,32 @@ router = APIRouter(prefix="/api", tags=["front"])
 PUBLIC_STATUSES = ("published", "finished")
 
 
-def _f_novel(n: Novel, with_created: bool = False) -> dict:
+def _published_counts(db: Session, novel_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """读者可见的章节数与字数（只算已发布章节；草稿不计入）"""
+    if not novel_ids:
+        return {}
+    rows = (
+        db.query(Chapter.novel_id, func.count(Chapter.id), func.coalesce(func.sum(Chapter.word_count), 0))
+        .filter(Chapter.novel_id.in_(novel_ids), Chapter.status == "published")
+        .group_by(Chapter.novel_id)
+        .all()
+    )
+    return {nid: (int(cnt), int(words)) for nid, cnt, words in rows}
+
+
+def _f_novels(db: Session, novels: list[Novel], with_created: bool = False) -> list[dict]:
+    counts = _published_counts(db, [n.id for n in novels])
+    return [_f_novel(n, with_created, counts.get(n.id, (0, 0))) for n in novels]
+
+
+def _f_novel(n: Novel, with_created: bool = False, counts: tuple[int, int] | None = None) -> dict:
+    chapter_count, word_count = counts if counts is not None else (n.chapter_count, n.word_count)
     data = {
         "id": n.id, "category_id": n.category_id,
         "category_name": n.category.name if n.category else "",
         "title": n.title, "cover": n.cover, "description": n.description,
         "tags": n.tags, "status": n.status, "status_text": n.status_text,
-        "word_count": n.word_count, "chapter_count": n.chapter_count,
+        "word_count": word_count, "chapter_count": chapter_count,
         "updated_at": dt_str(n.updated_at),
     }
     if with_created:
@@ -52,7 +72,7 @@ def home(db: Session = Depends(get_db)):
     )
     return ok({
         "site_name": site_name_row.value if site_name_row else "AI 小说工坊",
-        "recent_updates": [_f_novel(n) for n in recent],
+        "recent_updates": _f_novels(db, recent),
         "categories": _category_list(db),
     })
 
@@ -77,7 +97,7 @@ def novels(page: int = Query(1), page_size: int = Query(12),
     total = q.count()
     rows = q.order_by(Novel.updated_at.desc(), Novel.id.desc()) \
         .offset((page - 1) * page_size).limit(page_size).all()
-    return ok({"list": [_f_novel(n) for n in rows], "total": total, "page": page, "page_size": page_size})
+    return ok({"list": _f_novels(db, rows), "total": total, "page": page, "page_size": page_size})
 
 
 @router.get("/novels/{nid}")
@@ -91,11 +111,11 @@ def novel_show(nid: int, db: Session = Depends(get_db)):
         return fail("小说不存在或未公开", code=404)
     first_no = (
         db.query(Chapter.chapter_no)
-        .filter(Chapter.novel_id == nid)
+        .filter(Chapter.novel_id == nid, Chapter.status == "published")  # 草稿不能作为"开始阅读"的入口
         .order_by(Chapter.chapter_no)
         .first()
     )
-    data = _f_novel(n, with_created=True)
+    data = _f_novels(db, [n], with_created=True)[0]
     data["first_no"] = first_no[0] if first_no else None
     return ok(data)
 

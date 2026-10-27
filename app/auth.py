@@ -1,5 +1,5 @@
 """后台鉴权：签名的会话 Cookie（与 PHP session 等价，前端零改动）"""
-from fastapi import Depends, Request
+from fastapi import Request
 
 from app.helpers import fail_401
 
