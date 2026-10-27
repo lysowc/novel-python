@@ -1,10 +1,10 @@
 // API 统一入口：每个函数按 USE_MOCK 切换 mock / 真实请求
 // 真实请求路径与后端契约一一对应，联调时仅需关闭 mock
 import type {
-  AiLog, AiModel, AiProvider, AiTask, Category, Chapter, ChapterListItem,
+  AiLog, AiModel, AiProvider, AiTask, Category, Chapter, ChapterListItem, ChapterVersion,
   ChapterRead, ConsistencyReport, Dashboard, HomeData, Idea, IdeaMessage,
   LoginResult, Memory, Novel, NovelDetail, NovelSetting, PageResult, Prompt,
-  SystemConfig, TaskType,
+  SystemConfig, TaskType, UsageStats,
 } from '@/types/api'
 import { http, withQuery } from './http'
 import { readStream, type StreamHandlers } from './sse'
@@ -141,6 +141,54 @@ export function createChapter(id: number | string, body: { title: string; conten
 export function updateChapter(id: number | string, body: Partial<Chapter>) {
   if (USE_MOCK) return mockApi.updateChapter(Number(id), body)
   return http.put<Chapter>(`/admin/chapters/${id}`, body)
+}
+
+/** 发布草稿章节；不传 ids 则发布本小说全部草稿 */
+export function publishChapters(novelId: number | string, ids?: number[]) {
+  return http.post<{ count: number }>(`/admin/novels/${novelId}/chapters/publish`, { ids })
+}
+
+/** 整本导出：成功时触发浏览器下载；失败（如没有章节）时抛出后端给的错误信息 */
+export async function exportNovel(novelId: number | string, format: 'txt' | 'md' | 'epub', includeDrafts = false) {
+  const res = await fetch(
+    `/api/admin/novels/${novelId}/export?format=${format}&include_drafts=${includeDrafts ? 1 : 0}`,
+    { credentials: 'same-origin' },
+  )
+  if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`)
+  if ((res.headers.get('content-type') || '').includes('application/json')) {
+    const json = await res.json().catch(() => null)
+    throw new Error(json?.msg || '导出失败')
+  }
+  const blob = await res.blob()
+  const cd = res.headers.get('content-disposition') || ''
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  const name = m ? decodeURIComponent(m[1]!) : `novel-${novelId}.${format}`
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// ============ 章节历史版本 ============
+
+export function fetchChapterVersions(chapterId: number | string) {
+  return http.get<ChapterVersion[]>(`/admin/chapters/${chapterId}/versions`)
+}
+
+export function fetchChapterVersion(versionId: number | string) {
+  return http.get<ChapterVersion>(`/admin/chapter-versions/${versionId}`)
+}
+
+export function restoreChapterVersion(versionId: number | string) {
+  return http.post<Chapter>(`/admin/chapter-versions/${versionId}/restore`)
+}
+
+export function fetchDeletedChapters(novelId: number | string) {
+  return http.get<ChapterVersion[]>(`/admin/novels/${novelId}/deleted-chapters`)
 }
 
 export function deleteChapter(id: number | string) {
@@ -329,6 +377,11 @@ export function retryTask(id: number | string) {
   return http.post<AiTask>(`/admin/ai/tasks/${id}/retry`)
 }
 
+/** 取消任务；afterCurrent = 连续续写写完当前这章后停止 */
+export function cancelTask(id: number | string, afterCurrent = false) {
+  return http.post<AiTask>(`/admin/ai/tasks/${id}/cancel`, { after_current: afterCurrent })
+}
+
 // 任务流（SSE）：先建任务拿 task_id，再订阅
 export async function streamAiTask(
   id: number | string,
@@ -369,6 +422,10 @@ const MOCK_STREAM_TEXT = `夜色如墨，雁门关的城头挂着一盏孤灯。
 而那个十年前被逐出山门的少年，终于站到了他父亲曾经站过的地方。`
 
 // ============ 日志 ============
+
+export function fetchUsage(params: { days?: number; novel_id?: number }) {
+  return http.get<UsageStats>(withQuery('/admin/stats/usage', params))
+}
 
 export function fetchLogs(params: { page?: number; page_size?: number }) {
   if (USE_MOCK) return mockApi.logList(params)

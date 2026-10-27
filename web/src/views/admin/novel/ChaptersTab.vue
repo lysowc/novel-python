@@ -6,19 +6,25 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button'
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Eye, FilePlus2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Sparkles, Trash2, TriangleAlert, Wand2 } from '@lucide/vue'
+import { ArchiveRestore, Brain, Eye, MoreHorizontal, Send, FilePlus2, History, LoaderCircle, Pencil, Plus, RefreshCw, RotateCw, Sparkles, Trash2, TriangleAlert, Wand2 } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
+import ChapterVersionsDialog from '@/components/common/ChapterVersionsDialog.vue'
 import {
-  createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchTasks, retryTask, updateChapter,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  cancelTask, createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchTasks, publishChapters, retryTask, updateChapter,
 } from '@/api'
 import { countWords, formatNumber, formatRelative } from '@/lib/format'
 import type { AiTask, Chapter } from '@/types/api'
 
 const props = defineProps<{ novelId: number }>()
+
+type AiChapterTask = 'generate_chapter' | 'continue_chapter' | 'regenerate_chapter' | 'generate_summary' | 'update_memory'
 
 const loading = ref(true)
 const chapters = ref<Chapter[]>([])
@@ -35,11 +41,26 @@ const deleteLoading = ref(false)
 
 // AI 流式任务
 const aiOpen = ref(false)
-const aiTask = ref<{ type: 'generate_chapter' | 'continue_chapter' | 'regenerate_chapter' | 'generate_summary'; no?: number; mode: 'stream' | 'poll'; remaining?: number } | null>(null)
+const aiTask = ref<{ type: AiChapterTask; no?: number; mode: 'stream' | 'poll'; remaining?: number } | null>(null)
 const aiTitle = ref('')
 
 // 连续续写
 const batchCount = ref(5)
+
+// 历史版本 / 已删除章节
+const versionsOpen = ref(false)
+const versionsMode = ref<'versions' | 'deleted'>('versions')
+const versionsChapter = ref<Chapter | null>(null)
+function openVersions(c: Chapter) {
+  versionsMode.value = 'versions'
+  versionsChapter.value = c
+  versionsOpen.value = true
+}
+function openDeleted() {
+  versionsMode.value = 'deleted'
+  versionsChapter.value = null
+  versionsOpen.value = true
+}
 
 // 查看章节内容（只读）
 const viewOpen = ref(false)
@@ -65,7 +86,9 @@ const dismissed = ref<number[]>(readDismissed())
 /** 需要处理的失败任务：章节已保存待补做的、连续续写被停止的，以及最近一个任务失败的 */
 const failedTasks = computed(() =>
   recentTasks.value.filter((t, i) => {
-    if (t.status !== 'failed' || dismissed.value.includes(t.id)) return false
+    if (dismissed.value.includes(t.id)) return false
+    if (t.status === 'cancelled') return !!t.params?.resume
+    if (t.status !== 'failed') return false
     return !!t.params?.resume || !!t.params?.chain_stopped || i === 0
   }),
 )
@@ -91,12 +114,42 @@ async function retry(t: AiTask) {
   }
 }
 
+const cancelling = ref(false)
+async function cancelRunning(afterCurrent = false) {
+  if (!runningTask.value) return
+  cancelling.value = true
+  try {
+    await cancelTask(runningTask.value.id, afterCurrent)
+    toast.success(afterCurrent ? '写完本章后将停止连续续写' : '已请求取消')
+    loadRunningTask()
+  } catch {
+    // 请求层已提示
+  } finally {
+    cancelling.value = false
+  }
+}
+
 function dismiss(id: number) {
   dismissed.value = [...dismissed.value, id].slice(-100)
   try {
     localStorage.setItem(DISMISS_KEY, JSON.stringify(dismissed.value))
   } catch {
     // 无痕模式等场景下存储不可用，仅本次生效
+  }
+}
+
+const drafts = computed(() => chapters.value.filter((c) => c.status === 'draft'))
+const publishing = ref(false)
+async function publish(ids?: number[]) {
+  publishing.value = true
+  try {
+    const res = await publishChapters(props.novelId, ids)
+    toast.success(res.count ? `已发布 ${res.count} 章` : '没有需要发布的草稿')
+    load()
+  } catch {
+    // 请求层已提示
+  } finally {
+    publishing.value = false
   }
 }
 
@@ -220,21 +273,22 @@ function openProgressIfRunning(): boolean {
   return false
 }
 
-function startAi(type: 'generate_chapter' | 'continue_chapter' | 'regenerate_chapter' | 'generate_summary', c?: Chapter) {
+function startAi(type: AiChapterTask, c?: Chapter) {
   if (openProgressIfRunning()) return
   // generate_chapter 表示"生成下一章"，章号 = 当前最大章号 + 1
   const no = type === 'generate_chapter' && !c
     ? latestNo.value + 1
     : (c?.chapter_no ?? latestNo.value)
-  if ((type === 'continue_chapter' || type === 'regenerate_chapter' || type === 'generate_summary') && !no) {
+  if (type !== 'generate_chapter' && !no) {
     toast.error('还没有章节，请先创建或生成第一章')
     return
   }
-  aiTask.value = { type, no: no || undefined, mode: type === 'generate_summary' ? 'poll' : 'stream' }
+  aiTask.value = { type, no: no || undefined, mode: type === 'generate_summary' || type === 'update_memory' ? 'poll' : 'stream' }
   aiTitle.value =
     type === 'generate_chapter' ? 'AI 生成章节'
       : type === 'continue_chapter' ? `AI 续写 · 第 ${no} 章之后`
       : type === 'regenerate_chapter' ? `AI 重新生成 · 第 ${no} 章`
+      : type === 'update_memory' ? `更新记忆 · 第 ${no} 章`
       : `AI 生成摘要 · 第 ${no} 章`
   aiOpen.value = true
 }
@@ -305,6 +359,14 @@ onBeforeUnmount(stopPolling)
           <FilePlus2 class="size-4" />
           新增章节
         </Button>
+        <Button v-if="drafts.length" variant="outline" class="gap-2" :disabled="publishing" @click="publish()">
+          <Send class="size-4" />
+          发布全部草稿（{{ drafts.length }}）
+        </Button>
+        <Button variant="ghost" class="gap-2 text-muted-foreground" title="找回删除的章节" @click="openDeleted">
+          <ArchiveRestore class="size-4" />
+          已删除
+        </Button>
       </div>
     </div>
 
@@ -321,6 +383,18 @@ onBeforeUnmount(stopPolling)
       <Button size="sm" variant="outline" class="gap-1.5" @click="openProgress">
         <Eye class="size-3.5" />
         查看进度
+      </Button>
+      <Button
+        v-if="runningTask.task_type === 'continue_chapter' && Number(runningTask.params?.remaining ?? 0) > 0"
+        size="sm"
+        variant="ghost"
+        :disabled="cancelling"
+        @click="cancelRunning(true)"
+      >
+        写完本章后停止
+      </Button>
+      <Button size="sm" variant="ghost" class="text-destructive" :disabled="cancelling" @click="cancelRunning(false)">
+        取消
       </Button>
     </div>
 
@@ -387,8 +461,14 @@ onBeforeUnmount(stopPolling)
           <TableRow v-for="c in chapters" :key="c.id" class="group">
             <TableCell class="font-medium">{{ c.chapter_no }}</TableCell>
             <TableCell>
-              <p class="line-clamp-1 font-medium">{{ c.title }}</p>
-              <p class="text-[11px] text-muted-foreground">{{ countWords(c.content) }} 字</p>
+              <p class="line-clamp-1 font-medium">
+                <span
+                  v-if="c.status === 'draft'"
+                  class="mr-1.5 rounded border border-dashed border-foreground/40 px-1.5 py-px align-middle text-[10px] font-medium text-muted-foreground"
+                  title="草稿：读者不可见，审阅后点「发布」"
+                >草稿</span>{{ c.title }}
+              </p>
+              <p class="text-[11px] text-muted-foreground sm:hidden">{{ formatNumber(c.word_count) }} 字</p>
             </TableCell>
             <TableCell class="hidden sm:table-cell">{{ formatNumber(c.word_count) }}</TableCell>
             <TableCell class="hidden max-w-52 md:table-cell">
@@ -405,18 +485,37 @@ onBeforeUnmount(stopPolling)
                 <Button variant="ghost" size="icon" class="size-8" title="查看内容" @click="openView(c)">
                   <Eye class="size-4" />
                 </Button>
+                <Button v-if="c.status === 'draft'" variant="ghost" size="icon" class="size-8" title="发布（读者可见）" :disabled="publishing" @click="publish([c.id])">
+                  <Send class="size-4" />
+                </Button>
                 <Button variant="ghost" size="icon" class="size-8" title="编辑" @click="openEdit(c)">
                   <Pencil class="size-4" />
                 </Button>
                 <Button variant="ghost" size="icon" class="size-8 text-primary" title="AI 重新生成" @click="startAi('regenerate_chapter', c)">
                   <RefreshCw class="size-4" />
                 </Button>
-                <Button variant="ghost" size="icon" class="size-8 text-muted-foreground hover:text-foreground" title="AI 补摘要" @click="startAi('generate_summary', c)">
-                  <Wand2 class="size-4" />
-                </Button>
-                <Button variant="ghost" size="icon" class="size-8 text-destructive" title="删除" @click="deleting = c">
-                  <Trash2 class="size-4" />
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button variant="ghost" size="icon" class="size-8 text-muted-foreground hover:text-foreground" title="更多操作">
+                      <MoreHorizontal class="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" class="w-44">
+                    <DropdownMenuItem @select="startAi('generate_summary', c)">
+                      <Wand2 class="size-4" /> AI 补摘要
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @select="startAi('update_memory', c)">
+                      <Brain class="size-4" /> 更新本章记忆
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @select="openVersions(c)">
+                      <History class="size-4" /> 历史版本
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem class="text-destructive focus:text-destructive" @select="deleting = c">
+                      <Trash2 class="size-4" /> 删除
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </TableCell>
           </TableRow>
@@ -485,6 +584,15 @@ onBeforeUnmount(stopPolling)
       :loading="deleteLoading"
       @update:open="(v: boolean) => !v && (deleting = null)"
       @confirm="confirmDelete"
+    />
+
+    <!-- 历史版本 / 已删除章节 -->
+    <ChapterVersionsDialog
+      v-model:open="versionsOpen"
+      :mode="versionsMode"
+      :novel-id="novelId"
+      :chapter="versionsChapter"
+      @restored="load"
     />
 
     <!-- AI 流式对话框 -->

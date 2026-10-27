@@ -299,7 +299,7 @@ const chapters: MockChapter[] = Object.entries(chapterTexts).map(([no, content],
   summary: '',
   content,
   word_count: countWords(content),
-  status: 1,
+  status: 'published',
   created_at: daysAgo(30 - i * 5),
   updated_at: daysAgo(0, 3 - i),
 }))
@@ -679,7 +679,7 @@ export const mockApi = {
     const ch: MockChapter = {
       id: nid(), novel_id: Number(id), chapter_no: maxNo + 1, title: body.title,
       summary: body.summary ?? '', content: body.content, word_count: countWords(body.content),
-      status: 1, created_at: now(), updated_at: now(),
+      status: 'published', created_at: now(), updated_at: now(),
     }
     chapters.push(ch)
     this.updateNovel(id, {})

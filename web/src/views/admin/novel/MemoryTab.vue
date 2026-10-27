@@ -228,6 +228,21 @@ onMounted(load)
         </div>
       </div>
 
+      <div v-if="structured.character_archive?.length" class="rounded-2xl border bg-card shadow-sm">
+        <div class="border-b px-5 py-3 text-sm font-medium">
+          其他已登场人物（{{ structured.character_archive.length }}）
+          <span class="ml-1 text-xs font-normal text-muted-foreground">近期不活跃，保留姓名与最后状态，避免后文重名或"复活"</span>
+        </div>
+        <div class="flex flex-wrap gap-2 p-5">
+          <span
+            v-for="(c, i) in structured.character_archive"
+            :key="i"
+            class="rounded-full border border-foreground/15 px-3 py-1 text-sm"
+            :title="c.status"
+          >{{ c.name }}</span>
+        </div>
+      </div>
+
       <div v-if="structured.style_notes" class="rounded-2xl border bg-card shadow-sm">
         <div class="border-b px-5 py-3 text-sm font-medium">文风备注</div>
         <p class="p-5 text-sm leading-relaxed">{{ structured.style_notes }}</p>

@@ -32,6 +32,7 @@ const taskStatusMap: Record<TaskStatus, { label: string; cls: string; icon: type
   running: { label: '运行中', cls: 'bg-foreground/10 text-foreground', icon: LoaderCircle },
   success: { label: '成功', cls: 'bg-foreground text-background', icon: CheckCircle2 },
   failed: { label: '失败', cls: 'bg-destructive/10 text-destructive', icon: XCircle },
+  cancelled: { label: '已取消', cls: 'border border-foreground/20 text-muted-foreground', icon: XCircle },
 }
 
 const taskTypeLabel: Record<string, string> = {
@@ -109,12 +110,12 @@ onMounted(load)
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium">{{ taskTypeLabel[t.task_type] || t.task_type }}</p>
                 <p class="text-xs text-muted-foreground">任务 #{{ t.id }} · {{ formatRelative(t.created_at) }}</p>
-                <p v-if="t.status === 'failed' && t.error_message" class="line-clamp-1 break-all text-xs text-destructive/80" :title="t.error_message">
+                <p v-if="(t.status === 'failed' || t.status === 'cancelled') && t.error_message" class="line-clamp-1 break-all text-xs text-destructive/80" :title="t.error_message">
                   {{ t.error_message }}
                 </p>
               </div>
               <Button
-                v-if="t.status === 'failed'"
+                v-if="t.status === 'failed' || t.status === 'cancelled'"
                 size="sm"
                 variant="ghost"
                 class="h-7 gap-1 px-2 text-xs"

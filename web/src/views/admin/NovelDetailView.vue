@@ -3,7 +3,11 @@ import { Button } from '@/components/ui/button'
 
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, ExternalLink } from '@lucide/vue'
+import { ArrowLeft, Download, ExternalLink, LoaderCircle } from '@lucide/vue'
+import { toast } from 'vue-sonner'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import CoverArt from '@/components/common/CoverArt.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import InfoTab from './novel/InfoTab.vue'
@@ -12,7 +16,7 @@ import OutlineTab from './novel/OutlineTab.vue'
 import ChaptersTab from './novel/ChaptersTab.vue'
 import MemoryTab from './novel/MemoryTab.vue'
 import ConsistencyTab from './novel/ConsistencyTab.vue'
-import { fetchAdminNovel } from '@/api'
+import { exportNovel, fetchAdminNovel } from '@/api'
 import { formatNumber } from '@/lib/format'
 import type { NovelDetail } from '@/types/api'
 
@@ -44,6 +48,20 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+// 导出
+const exporting = ref(false)
+const includeDrafts = ref(false)
+async function doExport(format: 'txt' | 'md' | 'epub') {
+  exporting.value = true
+  try {
+    await exportNovel(id.value, format, includeDrafts.value)
+  } catch (e) {
+    toast.error((e as Error).message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 </script>
 
 <template>
@@ -53,10 +71,32 @@ onMounted(async () => {
         <ArrowLeft class="size-4" />
         返回列表
       </Button>
-      <Button variant="outline" size="sm" class="gap-1.5" :disabled="!novel" @click="router.push(`/novel/${id}`)">
-        <ExternalLink class="size-4" />
-        前台预览
-      </Button>
+      <div class="flex items-center gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <Button variant="outline" size="sm" class="gap-1.5" :disabled="!novel || exporting">
+              <LoaderCircle v-if="exporting" class="size-4 animate-spin" />
+              <Download v-else class="size-4" />
+              导出
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="w-52">
+            <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">导出整本小说</DropdownMenuLabel>
+            <DropdownMenuItem @select="doExport('txt')">TXT 文本</DropdownMenuItem>
+            <DropdownMenuItem @select="doExport('epub')">EPUB 电子书</DropdownMenuItem>
+            <DropdownMenuItem @select="doExport('md')">Markdown</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem @select.prevent="includeDrafts = !includeDrafts">
+              <span class="flex-1">包含草稿章节</span>
+              <span class="text-xs text-muted-foreground">{{ includeDrafts ? '是' : '否' }}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button variant="outline" size="sm" class="gap-1.5" :disabled="!novel" @click="router.push(`/novel/${id}`)">
+          <ExternalLink class="size-4" />
+          前台预览
+        </Button>
+      </div>
     </div>
 
     <LoadingState v-if="loading" variant="list" :rows="2" />

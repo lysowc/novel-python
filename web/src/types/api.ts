@@ -61,9 +61,24 @@ export interface Chapter {
   summary: string
   content: string
   word_count: number
-  status: number
+  /** published = 已发布；draft = 草稿（读者不可见） */
+  status: 'published' | 'draft' | string
   created_at: string
   updated_at: string
+}
+
+export interface ChapterVersion {
+  id: number
+  novel_id: number
+  chapter_no: number
+  title: string
+  word_count: number
+  source: string
+  source_text: string
+  preview: string
+  created_at: string
+  content?: string
+  summary?: string
 }
 
 export interface ChapterRead {
@@ -113,8 +128,31 @@ export interface AiModel {
   display_name: string
   max_tokens: number
   temperature: number
+  /** 每百万输入 / 输出 tokens 的价格（元），用于费用统计 */
+  price_input?: number
+  price_output?: number
   status: number
   is_default: number
+}
+
+export interface UsageRow {
+  calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost: number
+  failed: number
+  estimated: number
+}
+
+export interface UsageStats {
+  days: number
+  since: string
+  totals: UsageRow
+  by_day: (UsageRow & { date: string })[]
+  by_task_type: (UsageRow & { task_type: string; task_type_text: string })[]
+  by_model: (UsageRow & { model: string })[]
+  by_novel: (UsageRow & { novel_id: number; title: string })[]
 }
 
 export type PromptType =
@@ -136,7 +174,7 @@ export interface Prompt {
   updated_at: string
 }
 
-export type TaskStatus = 'pending' | 'running' | 'success' | 'failed'
+export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
 
 export type TaskType =
   | 'generate_setting'
@@ -253,6 +291,8 @@ export interface StructuredMemory {
   unresolved_events: string[]
   important_items: MemoryItem[]
   style_notes: string
+  /** 已不在「人物状态」中的登场人物（姓名 + 最后状态），由后端合并时自动维护 */
+  character_archive?: MemoryItem[]
 }
 
 // ============ 一致性审校 ============

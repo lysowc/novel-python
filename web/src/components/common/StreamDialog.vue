@@ -3,7 +3,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { LoaderCircle, Sparkles, Square, AlertCircle, CheckCircle2 } from '@lucide/vue'
-import { createAiTask, fetchTask, streamAiTask } from '@/api'
+import { cancelTask, createAiTask, fetchTask, streamAiTask } from '@/api'
+import { toast } from 'vue-sonner'
 import type { AiTask, TaskType } from '@/types/api'
 
 const props = withDefaults(
@@ -88,9 +89,9 @@ async function start() {
           emit('done', t)
           return
         }
-        if (t.status === 'failed') {
+        if (t.status === 'failed' || t.status === 'cancelled') {
           phase.value = 'error'
-          errorMsg.value = t.error_message || '任务失败'
+          errorMsg.value = t.error_message || (t.status === 'cancelled' ? '已取消' : '任务失败')
           emit('error', errorMsg.value)
           return
         }
@@ -114,6 +115,12 @@ async function start() {
         },
         onDone: async (data) => {
           const evt = data as { status?: string; error_message?: string } | undefined
+          if (evt?.status === 'cancelled') {
+            phase.value = 'error'
+            errorMsg.value = evt.error_message || '已取消'
+            emit('error', errorMsg.value)
+            return
+          }
           if (evt?.status === 'failed') {
             phase.value = 'error'
             errorMsg.value = evt.error_message || '任务失败'
@@ -139,11 +146,30 @@ async function start() {
   }
 }
 
-function stop() {
-  controller.value?.abort()
-  if (phase.value === 'running') {
-    phase.value = 'error'
-    errorMsg.value = '已手动中断'
+const cancelling = ref(false)
+const isChain = computed(() => props.taskType === 'continue_chapter' && Number(props.params?.remaining ?? 0) > 0)
+
+/** 取消服务端任务（不只是断开连接）；结果通过任务流的 done 事件回来 */
+async function stop(afterCurrent = false) {
+  if (!taskId.value) {
+    controller.value?.abort()
+    return
+  }
+  cancelling.value = true
+  try {
+    const t = await cancelTask(taskId.value, afterCurrent)
+    if (afterCurrent) toast.info('写完本章后将停止连续续写')
+    if (t.status === 'cancelled') {
+      controller.value?.abort()
+      phase.value = 'error'
+      errorMsg.value = '已取消'
+    } else {
+      statusText.value = afterCurrent ? '写完本章后停止…' : '正在取消…'
+    }
+  } catch {
+    // 请求层已提示（例如任务刚好结束）
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -211,10 +237,19 @@ watch(
       </div>
 
       <DialogFooter class="border-t px-5 py-3">
-        <Button v-if="isRunning" variant="secondary" @click="stop">
-          <Square class="size-4" />
-          停止生成
-        </Button>
+        <template v-if="isRunning">
+          <Button variant="ghost" class="text-muted-foreground" title="关闭窗口，任务继续在后台执行" @click="emit('update:open', false)">
+            后台运行
+          </Button>
+          <Button v-if="isChain" variant="outline" :disabled="cancelling" @click="stop(true)">
+            写完本章后停止
+          </Button>
+          <Button variant="secondary" :disabled="cancelling" @click="stop(false)">
+            <LoaderCircle v-if="cancelling" class="size-4 animate-spin" />
+            <Square v-else class="size-4" />
+            取消任务
+          </Button>
+        </template>
         <Button v-else @click="emit('update:open', false)">关闭</Button>
       </DialogFooter>
     </DialogContent>

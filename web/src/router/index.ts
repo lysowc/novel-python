@@ -82,6 +82,12 @@ const router = createRouter({
           meta: { title: 'Prompt 管理' },
         },
         {
+          path: 'ai/usage',
+          name: 'admin-usage',
+          component: () => import('@/views/admin/UsageView.vue'),
+          meta: { title: '用量统计' },
+        },
+        {
           path: 'ai/logs',
           name: 'admin-logs',
           component: () => import('@/views/admin/LogsView.vue'),

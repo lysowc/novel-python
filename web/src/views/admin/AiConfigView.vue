@@ -33,7 +33,7 @@ const providerForm = ref({ name: '', base_url: '', api_key: '', status: 1 })
 const modelOpen = ref(false)
 const modelEditing = ref<AiModel | null>(null)
 const modelSaving = ref(false)
-const modelForm = ref({ provider_id: 0, name: '', display_name: '', max_tokens: 8192, temperature: 0.8, status: 1 })
+const modelForm = ref({ provider_id: 0, name: '', display_name: '', max_tokens: 8192, temperature: 0.8, price_input: 0, price_output: 0, status: 1 })
 
 // 删除
 const deletingProvider = ref<AiProvider | null>(null)
@@ -112,7 +112,7 @@ function openModelCreate() {
   modelEditing.value = null
   modelForm.value = {
     provider_id: providers.value[0]?.id ?? 0,
-    name: '', display_name: '', max_tokens: 8192, temperature: 0.8, status: 1,
+    name: '', display_name: '', max_tokens: 8192, temperature: 0.8, price_input: 0, price_output: 0, status: 1,
   }
   modelOpen.value = true
 }
@@ -121,7 +121,8 @@ function openModelEdit(m: AiModel) {
   modelEditing.value = m
   modelForm.value = {
     provider_id: m.provider_id, name: m.name, display_name: m.display_name,
-    max_tokens: m.max_tokens, temperature: m.temperature, status: Number(m.status),
+    max_tokens: m.max_tokens, temperature: m.temperature,
+    price_input: m.price_input ?? 0, price_output: m.price_output ?? 0, status: Number(m.status),
   }
   modelOpen.value = true
 }
@@ -435,6 +436,17 @@ onMounted(load)
               <Input v-model.number="modelForm.temperature" type="number" min="0" max="2" step="0.1" />
             </div>
           </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="space-y-1.5">
+              <Label>输入单价（元 / 百万 tokens）</Label>
+              <Input v-model.number="modelForm.price_input" type="number" min="0" step="0.01" placeholder="0" />
+            </div>
+            <div class="space-y-1.5">
+              <Label>输出单价（元 / 百万 tokens）</Label>
+              <Input v-model.number="modelForm.price_output" type="number" min="0" step="0.01" placeholder="0" />
+            </div>
+          </div>
+          <p class="-mt-1 text-xs text-muted-foreground">填写后「用量统计」会按单价计算费用；不填则只统计 tokens。改价只影响之后的调用。</p>
           <div class="flex items-center justify-between rounded-xl border p-3">
             <div>
               <p class="text-sm font-medium">启用</p>
