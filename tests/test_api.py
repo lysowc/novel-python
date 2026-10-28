@@ -183,6 +183,22 @@ def test_trash_delete_restore_purge(S, client):
     assert db.query(AiTask).count() == 0 and db.get(Idea, 1).novel_id is None
 
 
+def test_purge_novel_with_memory_and_setting(S, client):
+    """线上发现：小说有记忆/设定时彻底删除报 StaleDataError（ORM 想把已删掉的记忆 novel_id 置空）"""
+    from app.models import NovelMemory, NovelSetting
+    make_novel(S, 1)
+    add_chapter(S, 1, 1, "x")
+    db = S()
+    db.add(NovelMemory(novel_id=1, content="{}"))
+    db.add(NovelSetting(novel_id=1, world_view="w"))
+    db.commit()
+    client.delete("/api/admin/novels/1")
+    r = client.delete("/api/admin/novels/1/purge").json()
+    assert r["code"] == 0, r
+    db = S()
+    assert db.get(Novel, 1) is None and db.query(NovelMemory).count() == 0 and db.query(NovelSetting).count() == 0
+
+
 def test_trash_auto_purge(S):
     from datetime import timedelta
     from app.helpers import now

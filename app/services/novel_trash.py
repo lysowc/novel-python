@@ -32,7 +32,10 @@ def purge(db: Session, novel: Novel) -> None:
     chapter_versions.delete_versions(db, nid)
     db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)
     db.query(Idea).filter(Idea.novel_id == nid).update({"novel_id": None}, synchronize_session=False)
-    db.delete(novel)
+    # 小说本身也用批量删除：db.delete(novel) 会按关系把已加载的设定/记忆的 novel_id 置空，
+    # 而它们刚被批量删掉，UPDATE 匹配不到行会报 StaleDataError
+    db.expunge(novel)
+    db.query(Novel).filter(Novel.id == nid).delete(synchronize_session=False)
 
 
 def purge_expired(db: Session) -> int:

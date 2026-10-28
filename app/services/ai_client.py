@@ -422,6 +422,7 @@ class AiClient:
                      "failed", str(e), prompt, self.novel_id)
             raise RuntimeError(f"AI 请求失败: {e}") from e
         abort()
+        duration = int((time.time() - start) * 1000)  # 记录整个生成耗时（此前只记了等到响应头的时间）
         on_stage and on_stage("stream_end")
 
         if not text.strip() and finish_reason == "length":
