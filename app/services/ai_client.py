@@ -40,14 +40,14 @@ def is_fatal(exc: BaseException | None) -> bool:
 
 # 思考型模型（如 DeepSeek V4、o 系列）的推理过程也算输出 tokens：在正文需要的长度之外多留一截，
 # 否则推理把额度用完、正文一个字都没有（"AI 返回内容为空"）。max_tokens 只是上限，用不到不计费。
-REASONING_HEADROOM = 8192
+REASONING_HEADROOM = 32768  # 思考型模型：推理 token 也算进 max_tokens，按实际用量计费，余量给足不多花钱
 DEFAULT_MAX_TOKENS = 16384
 THINKING_EXHAUSTED = "模型把输出额度都用在了思考上，没有给出正文。请在「AI 配置」把这个模型的 max_tokens 调大一些后重试"
 
 
 def output_limit(model: AiModel, options: dict) -> int:
     requested = int(options.get("max_tokens") or 0)
-    if options.get("_no_headroom"):
+    if options.get("_no_headroom") or options.get("_reasoning") == "none":
         return requested or DEFAULT_MAX_TOKENS
     limit = requested + REASONING_HEADROOM if requested else DEFAULT_MAX_TOKENS
     if model.max_tokens and int(model.max_tokens) > 0:
@@ -94,6 +94,36 @@ def default_target(db: Session) -> tuple[AiProvider, AiModel] | None:
 # 辅助类调用（摘要、记忆、审校、质量检查）可以走更便宜的模型；其余（正文、设定、大纲、点子聊天）走写作模型
 AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "consistency_check", "quality_check",
                         "arc_summary"}
+
+
+# 思考强度（DeepSeek 的 reasoning_effort：none 关闭思考 / low / high / max）。
+# 摘要、记忆这类整理活不需要深度思考：关掉后不会再出现"思考用光输出额度、正文为空"，也更省钱。
+REASONING_KEYS = {"writing": "reasoning_writing", "auxiliary": "reasoning_auxiliary", "review": "reasoning_review"}
+REASONING_DEFAULTS = {"reasoning_writing": "high", "reasoning_auxiliary": "none", "reasoning_review": "low"}
+REASONING_VALUES = ("none", "low", "high", "max")
+REVIEW_TASK_TYPES = {"consistency_check"}
+
+
+def reasoning_level(db: Session, task_type: str) -> str:
+    """本次调用的思考强度；空字符串 = 不传参数（用模型默认，设置里填 off）"""
+    if task_type in REVIEW_TASK_TYPES:
+        key = REASONING_KEYS["review"]
+    elif task_type in AUXILIARY_TASK_TYPES:
+        key = REASONING_KEYS["auxiliary"]
+    else:
+        key = REASONING_KEYS["writing"]
+    value = str(config_value(db, key, REASONING_DEFAULTS[key]) or "").strip().lower()
+    return value if value in REASONING_VALUES else ""
+
+
+def supports_reasoning_effort(provider: AiProvider, model: AiModel) -> bool:
+    """只给 DeepSeek 传 reasoning_effort：其他 OpenAI 兼容服务可能不认这个参数"""
+    return "deepseek" in (provider.base_url or "").lower() or "deepseek" in (model.name or "").lower()
+
+
+def _reasoning_rejected(status_code: int, message: str) -> bool:
+    m = (message or "").lower()
+    return status_code in (400, 422) and ("reasoning" in m or "thinking" in m)
 
 
 def resolve_target(db: Session, task_type: str = "") -> tuple[AiProvider, AiModel] | None:
@@ -206,6 +236,13 @@ class AiClient:
             raise AiFatalError("没有可用的 AI Provider/Model，请先在 AI 配置中添加并启用")
         return target
 
+    def _reasoning_options(self, provider: AiProvider, model: AiModel, task_type: str, options: dict) -> dict:
+        """把本次的思考强度写进 options（_reasoning），后面算 max_tokens 和组请求体都看它"""
+        if "_reasoning" in options:
+            return options
+        level = reasoning_level(self.db, task_type) if supports_reasoning_effort(provider, model) else ""
+        return {**options, "_reasoning": level}
+
     def _build_payload(self, messages: list[dict], model: AiModel, options: dict, stream: bool) -> dict:
         temperature = options.get("temperature")
         if temperature is None:
@@ -222,6 +259,8 @@ class AiClient:
             "stream": stream,
         }
         payload["max_tokens"] = output_limit(model, options)
+        if options.get("_reasoning"):
+            payload["reasoning_effort"] = options["_reasoning"]
         if stream and options.get("include_usage", True):
             # OpenAI 兼容接口在流式最后一个事件里返回 usage；不支持的服务会报 400，chat_stream 会去掉后重试
             payload["stream_options"] = {"include_usage": True}
@@ -237,6 +276,7 @@ class AiClient:
             float(config_value(self.db, "ai_http_timeout", settings.ai_http_timeout))
         )
 
+        options = self._reasoning_options(provider, model, task_type, options)
         payload = self._build_payload(messages, model, options, stream=False)
         start = time.time()
         try:
@@ -261,6 +301,8 @@ class AiClient:
             err = err or f"HTTP {resp.status_code}"
             if _max_tokens_rejected(resp.status_code, str(err)) and not options.get("_no_headroom"):
                 return self.chat(messages, {**options, "_no_headroom": True})
+            if _reasoning_rejected(resp.status_code, str(err)) and options.get("_reasoning"):
+                return self.chat(messages, {**options, "_reasoning": ""})
             log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt, self.novel_id)
             raise _http_error(resp.status_code, str(err))
 
@@ -294,6 +336,7 @@ class AiClient:
         task_type = str(options.get("task_type", "chat"))
         provider, model = self._resolve(task_type)
         prompt = _system_prompt(messages)
+        options = self._reasoning_options(provider, model, task_type, options)
         payload = self._build_payload(messages, model, options, stream=True)
         start = time.time()
 
@@ -361,6 +404,8 @@ class AiClient:
                     duration = int((time.time() - start) * 1000)
                     if _max_tokens_rejected(status_code, err) and not options.get("_no_headroom"):
                         return self.chat_stream(messages, {**options, "_no_headroom": True}, on_delta, on_stage)
+                    if _reasoning_rejected(status_code, err) and options.get("_reasoning"):
+                        return self.chat_stream(messages, {**options, "_reasoning": ""}, on_delta, on_stage)
                     if status_code in (400, 422) and "stream_options" in payload:
                         # 服务不支持 stream_options：去掉后重试一次
                         return self.chat_stream(messages, {**options, "include_usage": False}, on_delta, on_stage)

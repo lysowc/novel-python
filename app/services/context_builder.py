@@ -123,6 +123,13 @@ def context_budget(db: Session, output_tokens: int = 0) -> int:
     return budget
 
 
+def chapter_hint(db: Session, novel: Novel, chapter_no: int, instruction: str = "") -> str:
+    """本章可能涉及什么：本章大纲 + 附加要求 + 上一章结尾。用来挑选相关的人物档案、名词、伏笔和设定"""
+    last = published_chapters(db, novel, chapter_no).first()
+    return outline_target(novel, chapter_no) + "\n" + instruction.strip() + "\n" \
+        + ((last.content or "")[-1500:] if last else "")
+
+
 def build_chapter_context(
     db: Session, novel: Novel, chapter_no: int, instruction: str = "", retrieved: list[dict] | None = None,
     memory: str | None = None, output_tokens: int = 0,
@@ -148,8 +155,7 @@ def build_chapter_context(
     arcs = story_bible.arcs_text(db, novel.id, chapter_no)
     covered = story_bible.covered_until(db, novel.id, chapter_no) if arcs else 0
     summary_after = max(0, min(covered, chapter_no - 11))  # 分段总结覆盖的部分不再重复带摘要，但最近 10 章始终保留
-    last = published_chapters(db, novel, chapter_no).first()
-    hint = fixed["outline"] + "\n" + fixed["instruction"] + "\n" + ((last.content or "")[-1500:] if last else "")
+    hint = chapter_hint(db, novel, chapter_no, instruction)
     profile_rows = story_bible.relevant_profiles(db, novel, chapter_no, hint)
     term_rows = story_bible.relevant_terms(db, novel, chapter_no, hint)
     profile_n, term_n = len(profile_rows), len(term_rows)

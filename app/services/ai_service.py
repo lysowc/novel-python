@@ -22,6 +22,15 @@ from app.services.ai_client import CallbackAbort
 from app.services.ai_client import AiClient, config_value
 
 MEMORY_CHAPTER_CHARS = 12000  # 更新记忆时最多给 AI 看的正文字数（超出时保留开头和结尾）
+# 补充规则放在 user 消息里：库里已有的 memory_patch prompt 不会随默认值更新
+MEMORY_PATCH_RULES = (
+    "【伏笔记录规则】\n"
+    "- 伏笔只记会在后面章节回收的悬念/线索；本章内就会揭晓的小疑问、单纯的场景细节不要记，"
+    "未决的小事放 unresolved_add。每章新增伏笔一般不超过 3 条\n"
+    "- 关系到全书主线、必须在后面交代清楚的伏笔，写成 {\"description\": \"...\", \"major\": true}；"
+    "旧记忆里已有、但其实是主线的，把描述放进 foreshadowing_major 列表\n"
+    "- 回收伏笔时照抄旧记忆里的描述；旧记忆只列出了和本章相关的部分，没列出的不代表已删除，不要重复添加"
+)
 
 
 def parse_sections(text: str) -> dict:
@@ -175,7 +184,8 @@ class AiService:
 
         # 0. 本章开始前的记忆（重写中间章节时用当时的快照，而不是全书最新记忆）
         mem_base = memory_store.memory_before(self.db, novel, chapter_no)
-        mem_text = mem_base.context_text()
+        # 次要伏笔、世界观按与本章（大纲/上一章结尾）的相关性挑选，主线伏笔全带
+        mem_text = mem_base.context_text(context_builder.chapter_hint(self.db, novel, chapter_no, instruction))
         if mem_base.source == memory_store.SNAPSHOT:
             on_stage and on_stage("memory_base", f"使用第{mem_base.snapshot_no}章结束时的记忆快照")
         elif mem_base.source == memory_store.CURRENT_STALE:
@@ -273,7 +283,7 @@ class AiService:
     def _finish_chapter(self, novel: Novel, chapter: Chapter, mem_base, on_stage=None, task=None) -> None:
         """章节正文保存后的步骤：摘要 → 记忆 → 自动审校"""
         chapter_no = int(chapter.chapter_no)
-        mem_text = mem_base.context_text()
+        mem_text = mem_base.context_text(chapter.content or "")
 
         # 4. 生成摘要（已有摘要说明上次已完成这一步）
         if not (chapter.summary or "").strip():
@@ -456,7 +466,7 @@ class AiService:
         if not chapter:
             raise RuntimeError(f"第{chapter_no}章不存在")
         on_stage and on_stage("request", f"正在为第{chapter_no}章生成摘要...")
-        mem_text = memory_store.memory_before(self.db, novel, chapter_no).context_text()
+        mem_text = memory_store.memory_before(self.db, novel, chapter_no).context_text(chapter.content or "")
         chapter.summary = self.generate_summary(novel, chapter, mem_text)
         chapter.updated_at = now()
         self.db.commit()
@@ -465,7 +475,8 @@ class AiService:
     def generate_summary(self, novel: Novel, chapter: Chapter, memory_text: str | None = None) -> str:
         system = prompt_service.render(self.db, "chapter_summary")
         if memory_text is None:
-            memory_text = memory_store.memory_before(self.db, novel, chapter.chapter_no).context_text()
+            memory_text = memory_store.memory_before(self.db, novel, chapter.chapter_no).context_text(
+                chapter.content or "")
         context = (
             context_builder.setting_text(novel)
             + "\n\n【小说记忆（当前状态）】\n" + memory_text
@@ -505,8 +516,10 @@ class AiService:
         if base is None:
             base = memory_store.memory_before(self.db, novel, chapter.chapter_no)
 
+        # 旧记忆按与本章正文的相关性挑选（主线伏笔全带）：几百章后旧记忆也不会撑爆输入；
+        # 没列出的条目不会丢——补丁只写变化，回收伏笔时按描述在全部记忆里模糊匹配
         old_text = (
-            memory_service.to_context_text(base.content) if (base.content or "").strip()
+            memory_service.to_context_text(base.content, chapter.content or "") if (base.content or "").strip()
             else "（暂无旧记忆，这是第一次建立记忆）"
         )
 
@@ -523,6 +536,7 @@ class AiService:
             f"【旧记忆】\n{old_text}\n\n"
             f"【人物档案索引】\n{story_bible.profile_brief(self.db, novel.id)}\n\n"
             f"【名词表】\n{story_bible.term_brief(self.db, novel.id)}\n\n"
+            f"{MEMORY_PATCH_RULES}\n\n"
             f"【最新一章】\n第{no}章 {chapter.title}\n"
             f"本章摘要：{chapter.summary}\n\n"
             f"本章正文：\n{chapter_content}"

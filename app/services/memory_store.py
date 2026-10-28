@@ -29,10 +29,10 @@ class MemoryBase:
     source: str
     snapshot_no: int = 0
 
-    def context_text(self) -> str:
+    def context_text(self, hint: str | None = None) -> str:
         if not (self.content or "").strip():
             return "（暂无小说记忆）"
-        text = memory_service.to_context_text(self.content)
+        text = memory_service.to_context_text(self.content, hint)
         if self.source == CURRENT_STALE:
             return STALE_NOTE + "\n" + text
         return text

@@ -16,11 +16,18 @@ SLOTS = [
 ]
 
 ARCHIVE_LIMIT = 200      # 已登场人物名册上限
-WORLD_FACTS_LIMIT = 100  # 世界观事实上限
+WORLD_FACTS_LIMIT = 1000  # 世界观事实存储上限（只防异常膨胀；写章节时按相关性挑着带，见 select_for_context）
 ACTIVE_CHAR_LIMIT = 25   # 「人物状态」里的近期活跃人物上限（超出的按最久未出场移入名册）
 TIMELINE_LIMIT = 40      # 时间线只留最近的（更早的剧情由分段总结覆盖）
 UNRESOLVED_LIMIT = 40
-FORESHADOW_LIMIT = 80
+FORESHADOW_LIMIT = 80     # 只限制「带进写章节上下文」的条数；未回收的伏笔永远不删
+RESOLVED_KEEP = 20        # 已回收的伏笔只留最近这么多条（提醒"别再回收一次"）
+
+# 写章节时带进上下文的条数：主线伏笔全部带；次要伏笔和世界观带"最近的 + 和本章相关的"
+FORESHADOW_CONTEXT_RECENT = 30
+FORESHADOW_CONTEXT_RELEVANT = 15
+FACTS_CONTEXT_RECENT = 40
+FACTS_CONTEXT_RELEVANT = 20
 
 
 def _int(value) -> int:
@@ -100,16 +107,25 @@ def _render_slot(slot: str, value) -> str:
                 f"（已回收，第{resolved}章）" if status == "resolved"
                 else (f"（约第{planted}章埋下）" if planted > 0 else "")
             )
-            lines.append(f"- {desc}{suffix}")
+            tag = "【主线】" if f.get("major") and status != "resolved" else ""
+            lines.append(f"- {tag}{desc}{suffix}")
+        if isinstance(value, list) and value and isinstance(value[-1], dict) and value[-1].get("_omitted"):
+            lines.append(f"（另有 {value[-1]['_omitted']} 条较早的次要伏笔与本章关系不大，未列出）")
         return "\n".join(lines)
     if slot in ("world_facts", "unresolved_events"):
         lines = []
+        omitted = 0
         for fact in value if isinstance(value, list) else []:
             if isinstance(fact, dict):
+                if fact.get("_omitted"):
+                    omitted = int(fact["_omitted"])
+                    continue
                 fact = fact.get("description") or fact.get("name") or ""
             fact = str(fact).strip()
             if fact:
                 lines.append("- " + fact)
+        if omitted:
+            lines.append(f"（另有 {omitted} 条较早的设定与本章关系不大，未列出）")
         return "\n".join(lines)
     if slot == "timeline":
         lines = []
@@ -154,13 +170,49 @@ def render_structured(data: dict) -> str:
     return "\n\n".join(parts) if parts else "（暂无结构化记忆）"
 
 
-def to_context_text(content: str | None) -> str:
-    """记忆 → AI 上下文文本（v2 结构化渲染 / 旧格式兼容）"""
+def _relevance(text: str, hint_grams: set[str]) -> float:
+    grams = _bigrams(text)
+    return len(grams & hint_grams) / len(grams) if grams and hint_grams else 0.0
+
+
+def _pick(items: list, recent: int, relevant: int, hint_grams: set[str], key=lambda x: x) -> tuple[list, int]:
+    """保留最近 recent 条 + 与 hint 最相关的 relevant 条（保持原顺序），返回 (挑出的, 省略条数)"""
+    if len(items) <= recent + relevant:
+        return items, 0
+    keep = set(range(len(items) - recent, len(items)))
+    scored = sorted(((_relevance(key(x), hint_grams), i) for i, x in enumerate(items) if i not in keep), reverse=True)
+    keep |= {i for sc, i in scored[:relevant] if sc >= 0.25}
+    picked = [x for i, x in enumerate(items) if i in keep]
+    return picked, len(items) - len(picked)
+
+
+def select_for_context(data: dict, hint: str) -> dict:
+    """写章节用的记忆视图：主线伏笔全部保留；次要伏笔、世界观只带最近的和与本章（大纲/上一章结尾）相关的。
+    记忆本身一条不删，只是不全塞给 AI——几百章后也不会把上下文撑爆。"""
+    out = dict(data)
+    grams = _bigrams(hint or "")
+    fores = [f for f in data.get("foreshadowing", []) if isinstance(f, dict)]
+    opened = [f for f in fores if f.get("status") != "resolved"]
+    major = [f for f in opened if f.get("major")]
+    minor = [f for f in opened if not f.get("major")]
+    minor_picked, omitted = _pick(minor, FORESHADOW_CONTEXT_RECENT, FORESHADOW_CONTEXT_RELEVANT, grams,
+                                  key=lambda f: f.get("description", ""))
+    resolved = [f for f in fores if f.get("status") == "resolved"][-10:]
+    out["foreshadowing"] = major + minor_picked + resolved + ([{"_omitted": omitted}] if omitted else [])
+    facts = [f for f in data.get("world_facts", []) if f]
+    facts_picked, f_omitted = _pick(facts, FACTS_CONTEXT_RECENT, FACTS_CONTEXT_RELEVANT, grams, key=str)
+    out["world_facts"] = facts_picked + ([{"_omitted": f_omitted}] if f_omitted else [])
+    return out
+
+
+def to_context_text(content: str | None, hint: str | None = None) -> str:
+    """记忆 → AI 上下文文本（v2 结构化渲染 / 旧格式兼容）。
+    给了 hint（本章大纲、上一章结尾等）时，次要伏笔和世界观按相关性挑选，见 select_for_context。"""
     data = parse_memory(content)
     if not data:
         return "（暂无小说记忆）"
     if data.get("schema") == SCHEMA_V2:
-        return render_structured(data)
+        return render_structured(select_for_context(data, hint) if hint is not None else data)
     if data.get("schema") == "legacy_pairs":
         lines = [f"- {k}：{v}" for k, v in data.get("items", {}).items()]
         return "\n".join(lines) if lines else "（暂无小说记忆）"
@@ -206,12 +258,15 @@ def normalize_memory(data: dict) -> dict:
             fores.append({"description": f.strip(), "planted_chapter": 0, "status": "open", "resolved_chapter": 0})
         elif isinstance(f, dict):
             status = str(f.get("status", "open"))
-            fores.append({
+            item = {
                 "description": str(f.get("description") or f.get("name") or "").strip(),
                 "planted_chapter": _int(f.get("planted_chapter")),
                 "status": status if status in ("open", "resolved") else "open",
                 "resolved_chapter": _int(f.get("resolved_chapter")),
-            })
+            }
+            if f.get("major"):
+                item["major"] = 1
+            fores.append(item)
     out["foreshadowing"] = [f for f in fores if f["description"]]
 
     def string_list(slot: str) -> list[str]:
@@ -341,7 +396,7 @@ def merge_memory(old_content: str | None, new: dict) -> tuple[dict, list[str]]:
 
 PATCH_KEYS = (
     "current_state", "characters_upsert", "characters_left", "foreshadowing_add", "foreshadowing_resolve",
-    "world_facts_add", "timeline_add", "unresolved_add", "unresolved_resolve", "items_upsert",
+    "foreshadowing_major", "world_facts_add", "timeline_add", "unresolved_add", "unresolved_resolve", "items_upsert",
     "style_notes", "profiles", "terms",
 )
 
@@ -448,14 +503,36 @@ def apply_patch(old_content: str | None, patch: dict, chapter_no: int) -> tuple[
             open_list[i]["status"] = "resolved"
             open_list[i]["resolved_chapter"] = chapter_no
             notes.append("回收伏笔：" + open_list[i]["description"][:30])
-    for desc in _str_list(patch.get("foreshadowing_add")):
-        if _best_match(desc, [f["description"] for f in fores if f["status"] == "open"], 0.7) < 0:
-            fores.append({"description": desc, "planted_chapter": chapter_no, "status": "open", "resolved_chapter": 0})
-            notes.append("新伏笔：" + desc[:30])
-    # 已回收的伏笔只留最近 20 条（够提醒"别再回收一次"），未回收的全留，总数封顶
-    resolved = [f for f in fores if f["status"] == "resolved"][-20:]
+    for raw in patch.get("foreshadowing_add") or []:
+        # 可以是字符串，也可以是 {"description": ..., "major": true}（主线伏笔，写每章都会带上）
+        if isinstance(raw, dict):
+            desc = str(raw.get("description") or raw.get("name") or "").strip()
+            major = bool(raw.get("major"))
+        else:
+            desc, major = str(raw or "").strip(), False
+        if not desc:
+            continue
+        open_list = [f for f in fores if f["status"] == "open"]
+        i = _best_match(desc, [f["description"] for f in open_list], 0.7)
+        if i < 0:
+            item = {"description": desc, "planted_chapter": chapter_no, "status": "open", "resolved_chapter": 0}
+            if major:
+                item["major"] = 1
+            fores.append(item)
+            notes.append(("新主线伏笔：" if major else "新伏笔：") + desc[:30])
+        elif major:
+            open_list[i]["major"] = 1
+    for desc in _str_list(patch.get("foreshadowing_major")):
+        # 把已有的伏笔升级为主线
+        open_list = [f for f in fores if f["status"] == "open"]
+        i = _best_match(desc, [f["description"] for f in open_list])
+        if i >= 0:
+            open_list[i]["major"] = 1
+    # 未回收的伏笔一条都不删（以前超过上限会把最早的删掉，主线伏笔就这么被忘了）；
+    # 已回收的只留最近几条，够提醒"别再回收一次"
+    resolved = [f for f in fores if f["status"] == "resolved"][-RESOLVED_KEEP:]
     opened = [f for f in fores if f["status"] == "open"]
-    out["foreshadowing"] = (opened + resolved)[-FORESHADOW_LIMIT:] if len(opened) < FORESHADOW_LIMIT else opened
+    out["foreshadowing"] = opened + resolved
 
     for fact in _str_list(patch.get("world_facts_add")):
         if not any(_similar(fact, n) for n in out["world_facts"]):

@@ -236,3 +236,71 @@ def test_mark_appearances_tracks_regulars_by_text(S):
     assert rows["沈砚"] == 8, "按别名认出来"
     assert rows["顾青萝"] == 8, "锁定的档案也记录出场"
     assert rows["后来人"] == 9, "还没登场的人不受影响"
+
+
+# ---------- 长篇不忘：伏笔/设定不删，写章节时按相关性挑选 ----------
+
+def test_open_foreshadowing_never_dropped_and_major_kept():
+    old = json.dumps(mem.normalize_memory({"foreshadowing": [
+        {"description": f"第{i}章的小悬念编号{i}", "planted_chapter": i, "status": "open"} for i in range(1, 121)]
+        + [{"description": "沈家地窖里的樟木箱子装着什么", "planted_chapter": 1, "status": "open", "major": 1}],
+        "world_facts": [f"设定{i}：某地某事{i}" for i in range(150)]}), ensure_ascii=False)
+    out, notes = mem.apply_patch(old, {
+        "foreshadowing_add": [{"description": "青衫女子腰间的鹞鹰令牌", "major": True}, "柜房木匣里的东西"],
+        "world_facts_add": ["雁回镇北门夜里不关"],
+    }, 130)
+    opened = [f for f in out["foreshadowing"] if f["status"] == "open"]
+    assert len(opened) == 123, "未回收的伏笔一条都不能删"
+    assert any(f["description"].startswith("第1章的小悬念") for f in opened)
+    assert {f["description"] for f in opened if f.get("major")} == {"沈家地窖里的樟木箱子装着什么", "青衫女子腰间的鹞鹰令牌"}
+    assert len(out["world_facts"]) == 151 and out["world_facts"][0].startswith("设定0"), "最早的设定不能丢"
+    assert any("新主线伏笔" in n for n in notes)
+
+
+def test_select_for_context_keeps_major_and_relevant_old_items():
+    data = mem.normalize_memory({
+        "foreshadowing": [{"description": f"路人甲乙丙第{i}次闲聊里提到的琐事{i}", "planted_chapter": i, "status": "open"}
+                          for i in range(1, 101)]
+        + [{"description": "城墙根碎瓦片上的平州府衙关防印纹", "planted_chapter": 2, "status": "open"},
+           {"description": "沈家地窖里的樟木箱子装着什么", "planted_chapter": 1, "status": "open", "major": 1}],
+        "world_facts": [f"边镇杂事{i}" for i in range(100)] + ["平州府衙关防印由刑名师爷保管"],
+    })
+    # 把早期那条相关伏笔挪到最前面，确认它不是靠"最近"入选
+    data["foreshadowing"].insert(0, data["foreshadowing"].pop(100))
+    text = mem.render_structured(mem.select_for_context(data, "本章：沈砚拿着碎瓦片去平州府衙核对关防印纹"))
+    assert "【主线】沈家地窖里的樟木箱子" in text, "主线伏笔无论多早都要带上"
+    assert "平州府衙关防印纹" in text, "和本章相关的早期伏笔要召回"
+    assert "路人甲乙丙第1次闲聊" not in text, "无关的早期次要伏笔不带"
+    assert "未列出" in text
+    assert "平州府衙关防印由刑名师爷保管" in text
+    full = mem.render_structured(data)
+    assert len(text) < len(full) / 2
+
+
+def test_reasoning_effort_by_task_type(S):
+    from app.models import AiModel, AiProvider
+    from app.services.ai_client import AiClient, output_limit
+    db = S()
+    ds = AiProvider(name="ds", base_url="https://api.deepseek.com", api_key="")
+    other = AiProvider(name="o", base_url="https://api.example.com/v1", api_key="")
+    model = AiModel(provider_id=1, name="deepseek-flash", max_tokens=393216)
+    plain = AiModel(provider_id=2, name="gpt-x", max_tokens=0)
+    c = AiClient(db)
+    msgs = [{"role": "user", "content": "hi"}]
+
+    def payload(provider, m, task_type, max_tokens=4096):
+        opts = c._reasoning_options(provider, m, task_type, {"task_type": task_type, "max_tokens": max_tokens})
+        return c._build_payload(msgs, m, opts, stream=False)
+
+    p = payload(ds, model, "update_memory", 6144)
+    assert p["reasoning_effort"] == "none" and p["max_tokens"] == 6144, "辅助任务默认不思考，也不需要推理余量"
+    p = payload(ds, model, "consistency_check")
+    assert p["reasoning_effort"] == "low" and p["max_tokens"] > 4096 + 16000
+    assert payload(ds, model, "continue_chapter")["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in payload(other, model.__class__(provider_id=2, name="gpt-x"), "update_memory")
+    _config(S, reasoning_auxiliary="low", reasoning_writing="off")
+    db.expire_all()
+    assert payload(ds, model, "generate_summary")["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in payload(ds, model, "continue_chapter"), "off=不传"
+    assert output_limit(plain, {"max_tokens": 100, "_reasoning": "none"}) == 100
+    db.close()

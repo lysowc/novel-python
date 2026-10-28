@@ -50,6 +50,14 @@ const groups: { title: string; fields: Field[] }[] = [
     ],
   },
   {
+    title: '思考强度（DeepSeek）',
+    fields: [
+      { key: 'reasoning_writing', label: '写正文 / 设定 / 大纲', type: 'text', placeholder: 'high', hint: 'none=不思考直接写（「AI 温度」才生效）；low / high / max=先思考再写，越高越慢越贵。默认 high' },
+      { key: 'reasoning_auxiliary', label: '摘要 / 记忆 / 分段总结', type: 'text', placeholder: 'none', hint: '整理类任务，默认 none（不思考）：更快更省，也不会出现「思考用光额度、没给出结果」' },
+      { key: 'reasoning_review', label: '一致性审校', type: 'text', placeholder: 'low', hint: '找前后矛盾需要一点推理，默认 low。填 off=不传这个参数，用模型自己的默认（非 DeepSeek 模型不受影响）' },
+    ],
+  },
+  {
     title: '费用上限',
     fields: [
       { key: 'budget_daily', label: '每日 AI 费用上限（元）', type: 'number', placeholder: '0', hint: '今天所有 AI 调用加起来超过这个数就不再发起新任务，第二天自动恢复（0=不限；需要在「AI 配置」填写模型单价）', step: 1 },
