@@ -293,15 +293,21 @@ def test_reasoning_effort_by_task_type(S):
         return c._build_payload(msgs, m, opts, stream=False)
 
     p = payload(ds, model, "update_memory", 6144)
-    assert p["reasoning_effort"] == "none" and p["max_tokens"] == 6144, "辅助任务默认不思考，也不需要推理余量"
+    assert p["thinking"] == {"type": "disabled"} and "reasoning_effort" not in p and p["max_tokens"] == 6144, \
+        "辅助任务默认不思考，也不需要推理余量"
+    assert p["temperature"] == 1.0, "辅助任务用 1.0（DeepSeek 文档：数据整理）"
     p = payload(ds, model, "consistency_check")
-    assert p["reasoning_effort"] == "low" and p["max_tokens"] > 4096 + 16000
-    assert payload(ds, model, "continue_chapter")["reasoning_effort"] == "none", "写正文默认不思考"
-    assert "reasoning_effort" not in payload(other, model.__class__(provider_id=2, name="gpt-x"), "update_memory")
+    assert p["thinking"] == {"type": "enabled"} and p["reasoning_effort"] == "low" and p["max_tokens"] > 4096 + 16000
+    p = payload(ds, model, "continue_chapter")
+    assert p["thinking"] == {"type": "disabled"}, "写正文默认不思考"
+    assert p["temperature"] == 0.8, "写作用写作温度"
+    plain_p = payload(other, model.__class__(provider_id=2, name="gpt-x"), "update_memory")
+    assert "reasoning_effort" not in plain_p and "thinking" not in plain_p, "非 DeepSeek 不传"
     _config(S, reasoning_auxiliary="low", reasoning_writing="off")
     db.expire_all()
     assert payload(ds, model, "generate_summary")["reasoning_effort"] == "low"
-    assert "reasoning_effort" not in payload(ds, model, "continue_chapter"), "off=不传"
+    p = payload(ds, model, "continue_chapter")
+    assert "reasoning_effort" not in p and "thinking" not in p, "off=不传"
     assert output_limit(plain, {"max_tokens": 100, "_reasoning": "none"}) == 100
     db.close()
 

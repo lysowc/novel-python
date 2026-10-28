@@ -196,7 +196,7 @@ class AiService:
         target_words = int(params.get("target_words") or 0) or int(
             float(config_value(self.db, "chapter_target_words", 3000)))
         instruction = str(params.get("instruction") or "").strip()
-        max_tokens = max(1024, min(16384, target_words * 2))
+        max_tokens = max(1024, min(32768, target_words * 3))  # 不思考时没有推理余量，正文写长了也不能截断
 
         # 0. 本章开始前的记忆（重写中间章节时用当时的快照，而不是全书最新记忆）
         mem_base = memory_store.memory_before(self.db, novel, chapter_no)

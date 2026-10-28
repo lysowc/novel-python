@@ -245,6 +245,12 @@ class AiClient:
 
     def _build_payload(self, messages: list[dict], model: AiModel, options: dict, stream: bool) -> dict:
         temperature = options.get("temperature")
+        if temperature is None and options.get("task_type") in AUXILIARY_TASK_TYPES:
+            # 摘要、记忆、审校、大纲校准是整理/抽取类：DeepSeek 文档建议数据整理用 1.0，不跟写作温度走
+            try:
+                temperature = float(config_value(self.db, "ai_temperature_auxiliary", 1.0))
+            except (TypeError, ValueError):
+                temperature = 1.0
         if temperature is None:
             temperature = model.temperature
             if temperature is None:
@@ -259,8 +265,13 @@ class AiClient:
             "stream": stream,
         }
         payload["max_tokens"] = output_limit(model, options)
-        if options.get("_reasoning"):
-            payload["reasoning_effort"] = options["_reasoning"]
+        # DeepSeek 思考模式（文档 guides/thinking_mode）：thinking.type 开关；开启时 reasoning_effort 定强度
+        level = options.get("_reasoning")
+        if level == "none":
+            payload["thinking"] = {"type": "disabled"}
+        elif level:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = level
         if stream and options.get("include_usage", True):
             # OpenAI 兼容接口在流式最后一个事件里返回 usage；不支持的服务会报 400，chat_stream 会去掉后重试
             payload["stream_options"] = {"include_usage": True}
