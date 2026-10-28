@@ -215,3 +215,24 @@ def test_bible_api(S, client, fake_ai):  # noqa: F811
     assert client.delete(f"/api/admin/terms/{tid}").json()["code"] == 0
     assert client.delete(f"/api/admin/profiles/{pid}").json()["code"] == 0
     assert [p["name"] for p in client.get("/api/admin/novels/1/bible").json()["data"]["profiles"]] == ["苏晚"]
+
+
+def test_mark_appearances_tracks_regulars_by_text(S):
+    """主角每章都出场但 AI 补丁没提到他时，最近出场章也要跟上，否则会被挤出本章相关人物"""
+    make_novel(S, 1)
+    db = S()
+    db.add(CharacterProfile(novel_id=1, name="沈砚", aliases="言三郎,砚", role="主角", realm="", status="",
+                            realm_history=[], first_chapter=1, last_chapter=2, locked=0))
+    db.add(CharacterProfile(novel_id=1, name="顾青萝", aliases="", role="", realm="", status="",
+                            realm_history=[], first_chapter=1, last_chapter=2, locked=1))
+    db.add(CharacterProfile(novel_id=1, name="后来人", aliases="", role="", realm="", status="",
+                            realm_history=[], first_chapter=9, last_chapter=9, locked=0))
+    db.commit()
+    n = story_bible.mark_appearances(db, 1, 8, "言三郎推门而入，顾青萝抬头。砚台上墨迹未干。后来人未至。")
+    db.commit()
+    rows = {p.name: p.last_chapter for p in story_bible.profiles(db, 1)}
+    db.close()
+    assert n == 2
+    assert rows["沈砚"] == 8, "按别名认出来"
+    assert rows["顾青萝"] == 8, "锁定的档案也记录出场"
+    assert rows["后来人"] == 9, "还没登场的人不受影响"

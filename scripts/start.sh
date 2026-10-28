@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 启动 AI 小说工坊（API + AI 任务 worker + 可选 Mock AI）
-# 用法: bash scripts/start.sh          # 全部启动（含 mock）
-#       MOCK=0 bash scripts/start.sh   # 不启动 mock（已接真实 AI 时）
+# 用法: bash scripts/start.sh          # 全部启动（.env 里 APP_ENV=local 时含 mock，其他环境不启动 mock）
+#       MOCK=0 bash scripts/start.sh   # 强制不启动 mock
+#       MOCK=1 bash scripts/start.sh   # 强制启动 mock
 #       PORT=8800 bash scripts/start.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -61,8 +62,12 @@ for i in $(seq 1 "${WORKERS}"); do
 done
 echo "✔ AI 任务 worker 已启动 ×${RUNNING_WORKERS}（日志 runtime/worker.log，可用 WORKERS=N 调整进程数）"
 
-# 4. Mock AI（本地无 API Key 联调用；接真实 AI 后可用 MOCK=0 跳过）
-if [ "${MOCK:-1}" = "1" ]; then
+# 4. Mock AI（本地无 API Key 联调用）：只在 APP_ENV=local（默认）时启动，线上（如 APP_ENV=prod）不启动；MOCK=0/1 可强制
+APP_ENV_VALUE="$(grep -E '^APP_ENV=' "${ROOT}/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+if [ -z "${MOCK:-}" ]; then
+  if [ -z "${APP_ENV_VALUE}" ] || [ "${APP_ENV_VALUE}" = "local" ]; then MOCK=1; else MOCK=0; fi
+fi
+if [ "${MOCK}" = "1" ]; then
   if alive mock; then
     echo "⚠ mock 已在运行（pid $(cat "${LOG_DIR}/mock.pid")）"
   elif lsof -iTCP:"${MOCK_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then

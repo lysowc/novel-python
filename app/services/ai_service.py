@@ -548,6 +548,7 @@ class AiService:
             # 兼容：AI（或作者改过的旧 prompt）返回了整份记忆 → 规整后与旧记忆合并兜底
             data = memory_service.normalize_memory(data)
             data, restored = memory_service.merge_memory(base.content, data)
+        story_bible.mark_appearances(self.db, novel.id, no, chapter.content or "")
         new_content = json.dumps(data, ensure_ascii=False, indent=2)
 
         # 旧数据还没有快照：写新章节时把"开始前"的最新记忆补存为上一章快照，以后重写本章就有基准了

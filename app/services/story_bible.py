@@ -99,6 +99,24 @@ def upsert_profiles(db: Session, novel_id: int, chapter_no: int, items) -> list[
     return notes
 
 
+def mark_appearances(db: Session, novel_id: int, chapter_no: int, content: str) -> int:
+    """按正文实际出现的名字/别名更新「最近出场章」。
+    AI 的记忆补丁只列出有变化的人物，常驻角色（主角等）每章都在却未必被提到，只靠补丁会停在很早的章节，
+    挑选「本章相关人物」时就会被挤掉。这里直接看正文，单字别名容易误判，忽略。"""
+    if not content:
+        return 0
+    count = 0
+    for p in profiles(db, novel_id):
+        if (p.first_chapter or 0) > chapter_no:
+            continue
+        if any(len(n) >= 2 and n in content for n in p.names()):
+            if int(p.last_chapter or 0) < chapter_no:
+                p.last_chapter = chapter_no
+                count += 1
+    db.flush()
+    return count
+
+
 def relevant_profiles(db: Session, novel: Novel, chapter_no: int, hint_text: str,
                       active_names: list[str] | None = None, limit: int = PROFILE_CONTEXT_LIMIT) -> list[CharacterProfile]:
     """本章可能出场的人物：主角 + 在大纲/附加要求/上一章结尾/记忆活跃人物中提到的 + 最近出场的"""
