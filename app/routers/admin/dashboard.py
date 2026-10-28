@@ -22,7 +22,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     recent_logs = [f_log(l) for l in db.query(AiLog).order_by(AiLog.id.desc()).limit(10)]
     admin = db.query(Admin).filter(Admin.id == request.session.get("admin_id")).first()
     return ok({
-        "novel_count": db.query(Novel).count(),
+        "novel_count": db.query(Novel).filter(Novel.deleted_at.is_(None)).count(),
         "chapter_count": db.query(Chapter).count(),
         "total_words": _sum_word_count(db),
         "idea_count": db.query(Idea).count(),
@@ -31,7 +31,19 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         "recent_tasks": recent_tasks,
         "recent_logs": recent_logs,
         "security_warnings": security.config_warnings(admin.password if admin else None),
+        "outline_warnings": _outline_warnings(db),
     })
+
+
+def _outline_warnings(db: Session) -> list[dict]:
+    """大纲快用完的小说（提醒续写大纲）"""
+    from app.services.context_builder import outline_status
+    result = []
+    for n in db.query(Novel).filter(Novel.deleted_at.is_(None), Novel.outline.isnot(None)).all():
+        st = outline_status(db, n)
+        if st["warn"]:
+            result.append({"novel_id": n.id, "title": n.title, **st})
+    return result
 
 
 def _sum_word_count(db: Session) -> int:

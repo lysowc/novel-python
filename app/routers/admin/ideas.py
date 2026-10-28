@@ -104,6 +104,8 @@ def idea_chat(iid: int, payload: dict, db: Session = Depends(get_db)):
         """读取点子与历史消息，组装发给 AI 的消息（在线程里执行，避免阻塞事件循环）"""
         db2 = _open_db()
         try:
+            from app.services import budget
+            budget.ensure(db2)  # 超出每日费用上限就不再调用 AI
             idea_row = db2.query(Idea).filter(Idea.id == iid).first()
             history_row = db2.query(IdeaChat).filter(IdeaChat.idea_id == iid).order_by(IdeaChat.id).all()
             all_msgs = [{"role": c.role, "content": c.content} for c in history_row]

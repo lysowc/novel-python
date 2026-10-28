@@ -9,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import AuthError, require_admin
 from app.config import PROJECT_ROOT, settings
+from app.services.audit import AuditMiddleware
 from app.services.security import config_warnings
 from app.routers import admin, ai_tasks, export, front, stats, versions
 
@@ -17,6 +18,8 @@ app = FastAPI(title="AI 小说工坊", docs_url=None, redoc_url=None)
 for _warning in config_warnings():
     print("[安全提醒]", _warning)
 
+# 操作记录要读登录信息，必须在 SessionMiddleware 内层：先 add 的在内层
+app.add_middleware(AuditMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,

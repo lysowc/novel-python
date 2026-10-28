@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # AI 任务队列名：与 PHP 版共用 Redis 时，PHP 的 worker 不认 Python 版的小说锁和取消信号，
     # 如两版 worker 同时在跑，可给 Python 版配一个独立队列名（例如 ai:queue:py）
     ai_queue_key: str = "ai:queue"
+    # 定时续写按这个时区的时间触发（服务器系统时区常是 UTC）
+    timezone: str = "Asia/Shanghai"
 
     # 会话
     session_secret: str = "novel-python-secret-change-me"

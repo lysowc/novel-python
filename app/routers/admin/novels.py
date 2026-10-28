@@ -1,5 +1,6 @@
 """后台 API：小说、章节、设定、记忆、大纲、审校"""
 import json
+import re
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
@@ -7,10 +8,11 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.helpers import dt_str, fail, now, ok, word_count
 from app.models import (
-    AiTask, Chapter, ConsistencyReport,
-    Idea, Novel, NovelMemory, NovelSetting, CHAPTER_WRITTEN_STATUSES,
+    Chapter, ConsistencyReport,
+    Novel, NovelAutomation, NovelMemory, NovelSetting, CHAPTER_WRITTEN_STATUSES,
 )
-from app.services import chapter_versions, memory_store, task_service
+from app.config import settings
+from app.services import chapter_versions, context_builder, memory_store, novel_trash, task_service
 from app.routers.admin.formatters import f_novel, f_chapter, f_chapter_full, f_task
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -21,10 +23,11 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 @router.get("/novels")
 def novels(page: int = Query(1), page_size: int = Query(10),
            keyword: str = Query(""), category_id: int = Query(0),
-           status: str = Query(""), db: Session = Depends(get_db)):
+           status: str = Query(""), trash: int = Query(0), db: Session = Depends(get_db)):
     page = max(1, page)
     page_size = min(100, max(1, page_size))
-    q = db.query(Novel)
+    # trash=1 查看回收站，否则只看正常的小说
+    q = db.query(Novel).filter(Novel.deleted_at.isnot(None) if trash else Novel.deleted_at.is_(None))
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(Novel.title.like(like) | Novel.description.like(like))
@@ -33,8 +36,11 @@ def novels(page: int = Query(1), page_size: int = Query(10),
     if status in ("draft", "published", "finished"):
         q = q.filter(Novel.status == status)
     total = q.count()
-    rows = q.order_by(Novel.updated_at.desc(), Novel.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return ok({"list": [f_novel(n) for n in rows], "total": total, "page": page, "page_size": page_size})
+    order = (Novel.deleted_at.desc(),) if trash else (Novel.updated_at.desc(), Novel.id.desc())
+    rows = q.order_by(*order).offset((page - 1) * page_size).limit(page_size).all()
+    trash_total = db.query(Novel).filter(Novel.deleted_at.isnot(None)).count()
+    return ok({"list": [f_novel(n) for n in rows], "total": total, "page": page, "page_size": page_size,
+               "trash_total": trash_total, "trash_retention_days": novel_trash.retention_days(db)})
 
 
 @router.post("/novels")
@@ -94,24 +100,118 @@ def novel_update(nid: int, payload: dict, db: Session = Depends(get_db)):
 
 @router.delete("/novels/{nid}")
 def novel_destroy(nid: int, db: Session = Depends(get_db)):
-    n = db.query(Novel).filter(Novel.id == nid).first()
+    """删除 = 移入回收站（可恢复）；回收站里超过保留天数的会被自动彻底删除"""
+    n = db.query(Novel).filter(Novel.id == nid, Novel.deleted_at.is_(None)).first()
     if not n:
         return fail("小说不存在")
     try:
         with task_service.novel_guard(db, nid, "删除"):
-            db.query(Chapter).filter(Chapter.novel_id == nid).delete()
-            db.query(NovelSetting).filter(NovelSetting.novel_id == nid).delete()
-            db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete()
-            db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete()
-            memory_store.delete_snapshots(db, nid)
-            chapter_versions.delete_versions(db, nid)
-            db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)
-            db.query(Idea).filter(Idea.novel_id == nid).update({"novel_id": None}, synchronize_session=False)
-            db.delete(n)
+            n.deleted_at = now()
+            db.query(NovelAutomation).filter(NovelAutomation.novel_id == nid).update(
+                {"schedule_enabled": 0}, synchronize_session=False)  # 回收站里的小说不再定时续写
             db.commit()
     except RuntimeError as e:
         return fail(str(e))
-    return ok(None, "已删除")
+    return ok(None, f"已移入回收站，{novel_trash.retention_days(db)} 天内可以恢复")
+
+
+@router.post("/novels/{nid}/restore")
+def novel_restore(nid: int, db: Session = Depends(get_db)):
+    n = db.query(Novel).filter(Novel.id == nid, Novel.deleted_at.isnot(None)).first()
+    if not n:
+        return fail("回收站里没有这本小说")
+    n.deleted_at = None
+    n.updated_at = now()
+    db.commit()
+    return ok(f_novel(n), "已恢复")
+
+
+@router.delete("/novels/{nid}/purge")
+def novel_purge(nid: int, db: Session = Depends(get_db)):
+    """彻底删除（只能删回收站里的小说，不可恢复）"""
+    n = db.query(Novel).filter(Novel.id == nid).first()
+    if not n:
+        return fail("小说不存在")
+    if n.deleted_at is None:
+        return fail("请先把小说移入回收站，再彻底删除")
+    try:
+        with task_service.novel_guard(db, nid, "彻底删除"):
+            novel_trash.purge(db, n)
+            db.commit()
+    except RuntimeError as e:
+        return fail(str(e))
+    return ok(None, "已彻底删除")
+
+
+# ============ 自动化：定时续写 / 自动续写大纲 ============
+
+def _f_automation(a: NovelAutomation | None, novel_id: int) -> dict:
+    return {
+        "novel_id": novel_id,
+        "schedule_enabled": int(a.schedule_enabled) if a else 0,
+        "schedule_time": a.schedule_time if a else "08:00",
+        "chapters_per_run": int(a.chapters_per_run) if a else 1,
+        "target_words": int(a.target_words or 0) if a else 0,
+        "last_run_date": a.last_run_date.isoformat() if a and a.last_run_date else None,
+        "last_run_message": a.last_run_message if a else "",
+        "auto_extend_outline": int(a.auto_extend_outline) if a else 0,
+        "extend_chapters": int(a.extend_chapters) if a else 10,
+        "timezone": settings.timezone,
+    }
+
+
+@router.get("/novels/{nid}/automation")
+def novel_automation(nid: int, db: Session = Depends(get_db)):
+    if not db.query(Novel).filter(Novel.id == nid).first():
+        return fail("小说不存在")
+    a = db.query(NovelAutomation).filter(NovelAutomation.novel_id == nid).first()
+    return ok(_f_automation(a, nid))
+
+
+@router.put("/novels/{nid}/automation")
+def novel_automation_update(nid: int, payload: dict, db: Session = Depends(get_db)):
+    n = db.query(Novel).filter(Novel.id == nid).first()
+    if not n:
+        return fail("小说不存在")
+    a = db.query(NovelAutomation).filter(NovelAutomation.novel_id == nid).first()
+    if not a:
+        a = NovelAutomation(novel_id=nid, schedule_enabled=0, schedule_time="08:00", chapters_per_run=1,
+                            target_words=0, last_run_message="", auto_extend_outline=0, extend_chapters=10)
+        db.add(a)
+    if payload.get("schedule_time") is not None:
+        t = str(payload["schedule_time"]).strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t):
+            return fail("时间格式应为 HH:MM，例如 08:30")
+        a.schedule_time = t
+    if payload.get("chapters_per_run") is not None:
+        a.chapters_per_run = max(1, min(20, int(payload["chapters_per_run"] or 1)))
+    if payload.get("target_words") is not None:
+        a.target_words = max(0, int(payload["target_words"] or 0))
+    if payload.get("extend_chapters") is not None:
+        a.extend_chapters = max(1, min(50, int(payload["extend_chapters"] or 10)))
+    if payload.get("auto_extend_outline") is not None:
+        a.auto_extend_outline = 1 if payload["auto_extend_outline"] else 0
+    if payload.get("schedule_enabled") is not None:
+        enabled = 1 if payload["schedule_enabled"] else 0
+        if enabled and n.deleted_at is not None:
+            return fail("回收站里的小说不能开启定时续写")
+        if enabled and not a.schedule_enabled:
+            a.last_run_date = None  # 新开启：今天到点就会执行
+            a.last_run_message = ""
+        a.schedule_enabled = enabled
+    a.updated_at = now()
+    db.commit()
+    return ok(_f_automation(a, nid), "已保存")
+
+
+@router.get("/novels/{nid}/outline-status")
+def novel_outline_status(nid: int, db: Session = Depends(get_db)):
+    n = db.query(Novel).filter(Novel.id == nid).first()
+    if not n:
+        return fail("小说不存在")
+    a = db.query(NovelAutomation).filter(NovelAutomation.novel_id == nid).first()
+    return ok({**context_builder.outline_status(db, n),
+               "auto_extend_outline": int(a.auto_extend_outline) if a else 0})
 
 
 @router.get("/novels/{nid}/chapters")

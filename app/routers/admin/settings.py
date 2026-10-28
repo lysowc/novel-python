@@ -28,6 +28,15 @@ CONFIG_KEYS = {
     "consistency_auto_interval": "自动审校间隔（章）",
     "chapter_auto_publish": "AI 新章节自动发布",
     "context_max_chars": "生成上下文总字符上限",
+    "model_writing_id": "写作模型（正文/设定/大纲，0=默认模型）",
+    "model_auxiliary_id": "辅助模型（摘要/记忆/审校/质检，0=默认模型）",
+    "budget_daily": "每日 AI 费用上限（元，0=不限）",
+    "budget_novel_daily": "每本小说每日 AI 费用上限（元，0=不限）",
+    "trash_retention_days": "回收站保留天数",
+    "quality_check_enabled": "生成后自动检查质量",
+    "quality_min_ratio": "字数不足判定比例",
+    "auto_rebuild_memory": "重写中间章节后自动重建后续记忆",
+    "outline_warn_remaining": "大纲剩余几章时提醒/续写",
 }
 
 CONFIG_DEFAULTS = {
@@ -37,6 +46,10 @@ CONFIG_DEFAULTS = {
     "outline_chapters_per_volume": "20", "retrieval_enabled": "1",
     "retrieval_max_chapters": "5", "consistency_auto_interval": "0",
     "chapter_auto_publish": "1", "context_max_chars": "60000",
+    "model_writing_id": "0", "model_auxiliary_id": "0",
+    "budget_daily": "0", "budget_novel_daily": "0", "trash_retention_days": "30",
+    "quality_check_enabled": "1", "quality_min_ratio": "0.5",
+    "auto_rebuild_memory": "1", "outline_warn_remaining": "3",
 }
 
 

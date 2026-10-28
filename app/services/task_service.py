@@ -11,7 +11,8 @@ from app.config import settings
 from app.db import SessionLocal
 from app.helpers import json_dumps, now
 from app.models import AiTask, Novel
-from app.services.ai_client import CallbackAbort
+from app.services import budget
+from app.services.ai_client import AiFatalError, CallbackAbort
 
 QUEUE_KEY = settings.ai_queue_key or "ai:queue"
 STREAM_PREFIX = "ai:stream:"
@@ -27,6 +28,7 @@ TYPES = [
     "update_memory",
     "consistency_check",
     "rebuild_memory",
+    "extend_outline",
 ]
 
 
@@ -271,8 +273,11 @@ def create(db: Session, type_: str, novel_id: int, params: dict | None = None) -
     """创建任务并入队（同一小说同时只允许一个进行中任务）"""
     if type_ not in TYPES:
         raise RuntimeError("未知任务类型: " + type_)
-    if not db.query(Novel).filter(Novel.id == novel_id).first():
+    novel = db.query(Novel).filter(Novel.id == novel_id).first()
+    if not novel:
         raise RuntimeError("小说不存在")
+    if novel.deleted_at is not None:
+        raise RuntimeError("这本小说在回收站里，恢复后才能使用 AI")
     running = (
         db.query(AiTask)
         .filter(AiTask.ref_id == novel_id, AiTask.ref_type == "novel",
@@ -390,6 +395,9 @@ def execute(task_id: int) -> bool:
                 novel = db.query(Novel).filter(Novel.id == task.ref_id).first()
                 if not novel:
                     raise RuntimeError("小说不存在")
+                if novel.deleted_at is not None:
+                    raise AiFatalError("这本小说已移入回收站，任务不再执行")
+                budget.ensure(db, novel.id)  # 超出费用上限就不再发起 AI 调用
 
                 ai = AiService(db)
                 ai.client.novel_id = novel.id  # AI 日志按小说统计用量
@@ -405,6 +413,9 @@ def execute(task_id: int) -> bool:
 
                 def on_stage(stage: str, message: str = "") -> None:
                     check_cancel(force=True)
+                    if stage == "reset_output":  # 正文要重写：通知前端清空已显示的内容
+                        publish(task_id, {"type": "reset"})
+                        return
                     publish(task_id, {"type": "status", "stage": stage, "message": message})
 
                 def on_delta(delta: str) -> None:
@@ -436,6 +447,8 @@ def execute(task_id: int) -> bool:
                 elif task.task_type == "rebuild_memory":
                     start_no = int((task.params or {}).get("chapter_no") or 1)
                     ai.rebuild_memory(novel, start_no, on_stage)
+                elif task.task_type == "extend_outline":
+                    ai.extend_outline(novel, int((task.params or {}).get("chapters") or 10), on_stage)
                 elif task.task_type == "consistency_check":
                     ai.check_consistency(novel, task, on_stage)
                 else:

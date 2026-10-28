@@ -29,6 +29,7 @@ def f_novel(n: Novel, with_public: bool = True) -> dict:
     }
     if with_public:
         data["is_public"] = n.is_public
+    data["deleted_at"] = dt_str(n.deleted_at)
     return data
 
 

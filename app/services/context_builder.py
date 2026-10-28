@@ -69,6 +69,26 @@ def outline_target(novel: Novel, chapter_no: int) -> str:
     return f"第{chapter_no}章（大纲未覆盖此章，请根据剧情走向自由创作，并自拟合适的情节）"
 
 
+def outline_max_no(novel: Novel) -> int:
+    """大纲规划到的最大章号（0 = 还没有大纲）"""
+    nos = [int(c.get("no") or 0) for v in novel.get_outline_array().get("volumes", [])
+           for c in (v.get("chapters") or []) if isinstance(c, dict)]
+    return max(nos) if nos else 0
+
+
+def outline_status(db: Session, novel: Novel) -> dict:
+    """大纲余量：剩余章数 ≤ 阈值时提醒（或自动续写大纲）"""
+    from sqlalchemy import func
+    written = int(db.query(func.max(Chapter.chapter_no)).filter(Chapter.novel_id == novel.id).scalar() or 0)
+    planned = outline_max_no(novel)
+    threshold = get_config_int(db, "outline_warn_remaining", 3)
+    remaining = planned - written
+    return {
+        "outline_max": planned, "written_max": written, "remaining": remaining,
+        "threshold": threshold, "warn": planned > 0 and remaining <= threshold,
+    }
+
+
 def outline_title(novel: Novel, chapter_no: int) -> str:
     outline = novel.get_outline_array()
     for volume in outline.get("volumes", []):
@@ -86,10 +106,10 @@ SYSTEM_PROMPT_RESERVE = 2000
 
 
 def context_budget(db: Session, output_tokens: int = 0) -> int:
-    """上下文字符上限：系统设置 context_max_chars 与「默认模型上下文窗口 - 输出预留」取较小值"""
+    """上下文字符上限：系统设置 context_max_chars 与「写作模型上下文窗口 - 输出预留」取较小值"""
     budget = get_config_int(db, "context_max_chars", 60000)
-    from app.services.ai_client import default_target
-    target = default_target(db)
+    from app.services.ai_client import resolve_target
+    target = resolve_target(db, "continue_chapter")  # 正文用的写作模型
     window = int(target[1].context_window or 0) if target else 0
     if window > 0:
         derived = int((window - max(0, output_tokens) - SYSTEM_PROMPT_RESERVE) * CHARS_PER_TOKEN)

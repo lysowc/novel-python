@@ -51,7 +51,7 @@ def _category_list(db: Session) -> list[dict]:
         count = (
             db.query(Novel)
             .filter(Novel.category_id == c.id, Novel.is_public == 1,
-                    Novel.status.in_(PUBLIC_STATUSES))
+                    Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
             .count()
         )
         if count == 0:
@@ -65,7 +65,7 @@ def home(db: Session = Depends(get_db)):
     site_name_row = db.query(SystemConfig).filter(SystemConfig.key == "site_name").first()
     recent = (
         db.query(Novel)
-        .filter(Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES))
+        .filter(Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
         .order_by(Novel.updated_at.desc())
         .limit(12)
         .all()
@@ -88,7 +88,7 @@ def novels(page: int = Query(1), page_size: int = Query(12),
            db: Session = Depends(get_db)):
     page = max(1, page)
     page_size = min(60, max(1, page_size))
-    q = db.query(Novel).filter(Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES))
+    q = db.query(Novel).filter(Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
     if category_id > 0:
         q = q.filter(Novel.category_id == category_id)
     if keyword:
@@ -104,7 +104,7 @@ def novels(page: int = Query(1), page_size: int = Query(12),
 def novel_show(nid: int, db: Session = Depends(get_db)):
     n = (
         db.query(Novel)
-        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES))
+        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
         .first()
     )
     if not n:
@@ -124,7 +124,7 @@ def novel_show(nid: int, db: Session = Depends(get_db)):
 def novel_chapters(nid: int, db: Session = Depends(get_db)):
     n = (
         db.query(Novel)
-        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES))
+        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
         .first()
     )
     if not n:
@@ -148,7 +148,7 @@ def novel_chapters(nid: int, db: Session = Depends(get_db)):
 def novel_read(nid: int, no: int, db: Session = Depends(get_db)):
     n = (
         db.query(Novel)
-        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES))
+        .filter(Novel.id == nid, Novel.is_public == 1, Novel.status.in_(PUBLIC_STATUSES), Novel.deleted_at.is_(None))
         .first()
     )
     if not n:

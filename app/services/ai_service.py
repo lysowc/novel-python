@@ -13,10 +13,11 @@ from sqlalchemy.orm import Session
 
 from app.helpers import now, word_count
 from app.models import (
-    CHAPTER_WRITTEN_STATUSES, Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting,
+    CHAPTER_WRITTEN_STATUSES, NovelAutomation, Chapter, ConsistencyReport, Idea, Novel, NovelMemory, NovelSetting,
 )
 from app.services import context_builder, memory as memory_service
-from app.services import chapter_versions, memory_store, prompt_service, retrieval, task_service
+from app.services import chapter_versions, memory_store, prompt_service, quality, retrieval, task_service
+from app.services.ai_client import CallbackAbort
 from app.services.ai_client import AiClient, config_value
 
 
@@ -160,6 +161,10 @@ class AiService:
                     Chapter.novel_id == novel.id, Chapter.chapter_no == chapter_no).first():
                 raise RuntimeError(f"第{chapter_no}章已存在，如需重写请使用「重新生成」")
 
+        # 大纲快用完：开启了自动续写大纲就先补上（失败不影响写本章）
+        if type_ != "regenerate_chapter":
+            self._maybe_extend_outline(novel, chapter_no, on_stage)
+
         target_words = int(params.get("target_words") or 0) or int(
             float(config_value(self.db, "chapter_target_words", 3000)))
         instruction = str(params.get("instruction") or "").strip()
@@ -191,15 +196,11 @@ class AiService:
         user_context = context_builder.build_chapter_context(
             self.db, novel, chapter_no, instruction, retrieved_list, mem_text, output_tokens=max_tokens)
 
-        result = self.client.chat_stream(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": user_context}],
-            {"task_type": type_, "max_tokens": max_tokens},
-            on_delta,
-        )
-        content = result["text"].strip()
-        if not content:
-            raise RuntimeError("AI 返回内容为空")
+        content, issues = self._write_with_quality_check(
+            novel, chapter_no, system, user_context, type_, max_tokens, target_words, on_delta, on_stage)
+        if issues:
+            task.params = {**(task.params or {}), "quality_warning": "；".join(issues)}
+            on_stage and on_stage("quality_warning", "自动重写后仍有问题，已保留较好的一版：" + "；".join(issues))
 
         on_stage and on_stage("content_done", f"正文生成完成（{word_count(content)} 字），正在保存...")
 
@@ -225,7 +226,7 @@ class AiService:
         chapter.word_count = word_count(content)
         chapter.updated_at = now()  # 重新生成保留原状态（已发布的不会因重写而对读者消失）
         # 记下断点：后续步骤失败时，重试只补做摘要/记忆，不会重新生成或多写一章
-        task.params = {**params, "resume": {"chapter_no": chapter_no, "memory_base": mem_base.source}}
+        task.params = {**(task.params or {}), "resume": {"chapter_no": chapter_no, "memory_base": mem_base.source}}
         self.db.commit()
         self._recount(novel)
 
@@ -285,9 +286,23 @@ class AiService:
         on_stage and on_stage("memory", "正在更新小说记忆...")
         try:
             warning = self._retry_once(lambda: self.update_memory(novel, chapter, mem_base))
-            on_stage and on_stage("memory_done", "小说记忆已更新" + (f"（{warning}）" if warning else ""))
         except Exception as e:
             raise RuntimeError(f"第{chapter_no}章已保存，但记忆更新失败（可重试补做）：{e}") from e
+
+        # 5.1 重写的是中间章节：后续章节的记忆都建立在旧版本上，按设置自动逐章重建
+        has_later = self.db.query(Chapter.id).filter(
+            Chapter.novel_id == novel.id, Chapter.chapter_no > chapter_no).first() is not None
+        auto_rebuild = int(float(config_value(self.db, "auto_rebuild_memory", 1))) > 0
+        if has_later and auto_rebuild:
+            on_stage and on_stage("memory_done", f"第{chapter_no}章记忆已更新，开始重建后续章节的记忆...")
+            try:
+                self.rebuild_memory(novel, chapter_no + 1, on_stage)
+            except Exception as e:
+                raise RuntimeError(
+                    f"第{chapter_no}章已保存，但后续章节记忆重建失败（可重试，或在记忆页从第{chapter_no + 1}章重建）：{e}"
+                ) from e
+        else:
+            on_stage and on_stage("memory_done", "小说记忆已更新" + (f"（{warning}）" if warning else ""))
 
         # 6. 自动一致性审校（每 N 章）
         interval = int(float(config_value(self.db, "consistency_auto_interval", 0)))
@@ -297,6 +312,116 @@ class AiService:
                 on_stage and on_stage("consistency_queued", f"已自动安排第{chapter_no}章后的一致性审校")
             except Exception as e:
                 on_stage and on_stage("consistency_queued", "自动审校入队失败：" + str(e))
+
+    def _write_with_quality_check(self, novel: Novel, chapter_no: int, system: str, user_context: str,
+                                  type_: str, max_tokens: int, target_words: int,
+                                  on_delta=None, on_stage=None) -> tuple[str, list[str]]:
+        """生成正文；开启质量检查时，字数不足/截断/与上一章大段重复/段落重复会自动重写一次，保留较好的一版"""
+        enabled = int(float(config_value(self.db, "quality_check_enabled", 1))) > 0
+        try:
+            min_ratio = float(config_value(self.db, "quality_min_ratio", 0.5))
+        except (TypeError, ValueError):
+            min_ratio = 0.5
+        previous = self.db.query(Chapter.content).filter(
+            Chapter.novel_id == novel.id, Chapter.chapter_no == chapter_no - 1).scalar() or ""
+
+        user = user_context
+        best: tuple[str, list[str]] | None = None
+        attempts = 2 if enabled else 1
+        for attempt in range(1, attempts + 1):
+            result = self.client.chat_stream(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                {"task_type": type_, "max_tokens": max_tokens},
+                on_delta,
+            )
+            content = (result.get("text") or "").strip()
+            if not enabled:
+                return content, []
+            issues = quality.check(content, target_words, previous, result.get("finish_reason", ""), min_ratio) \
+                if content else ["AI 返回内容为空"]
+            if best is None or quality.score(issues, content) > quality.score(best[1], best[0]):
+                best = (content, issues)
+            if not issues or attempt == attempts:
+                break
+            on_stage and on_stage("quality_retry", "质量检查未通过：" + "；".join(issues) + "，自动重写一次...")
+            on_stage and on_stage("reset_output", "")
+            user = (user_context + "\n\n【上一次生成的问题】\n" + "\n".join(f"- {i}" for i in issues)
+                    + "\n请避免以上问题，完整写完本章。")
+        content, issues = best
+        if not content:
+            raise RuntimeError("AI 返回内容为空")
+        if content != (result.get("text") or "").strip():
+            # 保留的是第一版：让进度框重新显示它
+            on_stage and on_stage("reset_output", "")
+            on_delta and on_delta(content)
+        return content, issues
+
+    def _maybe_extend_outline(self, novel: Novel, chapter_no: int, on_stage=None) -> None:
+        automation = self.db.query(NovelAutomation).filter(NovelAutomation.novel_id == novel.id).first()
+        if not automation or not automation.auto_extend_outline:
+            return
+        planned = context_builder.outline_max_no(novel)
+        threshold = int(float(config_value(self.db, "outline_warn_remaining", 3)))
+        if planned <= 0 or planned - chapter_no + 1 > threshold:
+            return
+        try:
+            self.extend_outline(novel, int(automation.extend_chapters or 10), on_stage)
+        except CallbackAbort:
+            raise
+        except Exception as e:  # noqa: BLE001  大纲续写失败不影响写本章
+            on_stage and on_stage("outline_extend_failed", f"自动续写大纲失败（不影响本章）：{e}")
+
+    def extend_outline(self, novel: Novel, chapters: int = 10, on_stage=None) -> int:
+        """接着现有大纲往后规划 chapters 章，返回新增章数"""
+        chapters = max(1, min(50, int(chapters or 10)))
+        outline = novel.get_outline_array()
+        volumes = [v for v in outline.get("volumes", []) if isinstance(v, dict)]
+        start_no = context_builder.outline_max_no(novel) + 1
+        on_stage and on_stage("outline_extend", f"大纲快用完了，正在续写第{start_no}章起的 {chapters} 章大纲...")
+        outline_lines = context_builder.outline_text(novel).splitlines()
+        if len(outline_lines) > 80:
+            outline_lines = ["……（更早的大纲已省略）"] + outline_lines[-80:]
+        system = prompt_service.render(self.db, "outline_extend", {"chapters": chapters, "start_no": start_no})
+        user = (
+            context_builder.setting_text(novel)
+            + "\n\n【现有大纲】\n" + ("\n".join(outline_lines) or "（暂无）")
+            + "\n\n【已写章节进度】\n" + context_builder.written_progress_text(self.db, novel, 8000)
+            + "\n\n【小说记忆（当前状态）】\n" + context_builder.memory_text(novel)
+        )
+        timeout = int(float(config_value(self.db, "ai_http_timeout", 120))) * 3
+        result = self.client.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            {"task_type": "extend_outline", "max_tokens": 8192, "timeout": timeout},
+        )
+        data = extract_json(result["text"])
+        if not isinstance(data.get("volumes"), list):
+            raise RuntimeError("大纲续写解析失败：AI 未返回合法 JSON")
+        no = start_no
+        for volume in data["volumes"]:
+            if not isinstance(volume, dict):
+                continue
+            new_chapters = []
+            for chapter in volume.get("chapters") or []:
+                if not isinstance(chapter, dict) or no >= start_no + chapters:
+                    continue
+                new_chapters.append({"no": no, "title": str(chapter.get("title") or f"第{no}章"),
+                                     "summary": str(chapter.get("summary") or "")})
+                no += 1
+            if not new_chapters:
+                continue
+            title = str(volume.get("title") or "").strip()
+            if volumes and (not title or title == volumes[-1].get("title")):
+                volumes[-1].setdefault("chapters", []).extend(new_chapters)
+            else:
+                volumes.append({"title": title or f"第{len(volumes) + 1}卷", "chapters": new_chapters})
+        added = no - start_no
+        if added <= 0:
+            raise RuntimeError("大纲续写失败：AI 没有给出新的章节")
+        novel.outline = json.dumps({"volumes": volumes}, ensure_ascii=False)
+        novel.updated_at = now()
+        self.db.commit()
+        on_stage and on_stage("outline_extended", f"大纲已续写 {added} 章（第{start_no}~{no - 1}章）")
+        return added
 
     def generate_summary_for_chapter(self, novel: Novel, task, on_stage=None) -> None:
         chapter_no = int(task.params.get("chapter_no") or 0) if task.params else 0

@@ -1,7 +1,7 @@
 """全部数据库模型（与 PHP 版表结构一一对应，共用同一 MySQL 库）"""
 
 from sqlalchemy import (
-    BigInteger, Column, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text,
+    BigInteger, Column, Date, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text,
 )
 from sqlalchemy.orm import relationship
 
@@ -44,6 +44,7 @@ class Novel(Base):
     outline = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)  # 非空 = 在回收站里
 
     category = relationship("Category", lazy="joined",
                             primaryjoin="foreign(Novel.category_id) == Category.id")
@@ -262,6 +263,7 @@ class AiTask(Base):
         "update_memory": "更新记忆",
         "consistency_check": "一致性审校",
         "rebuild_memory": "重建记忆",
+        "extend_outline": "续写大纲",
     }
 
     @property
@@ -305,3 +307,36 @@ class ConsistencyReport(Base):
     status = Column(String(20), nullable=False, default="warning")
     report = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=True)
+
+
+class OperationLog(Base):
+    """后台操作记录：谁、什么时候、做了什么"""
+    __tablename__ = "operation_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    admin_id = Column(Integer, nullable=False, default=0)
+    username = Column(String(64), nullable=False, default="")
+    action = Column(String(64), nullable=False, default="")
+    summary = Column(String(500), nullable=False, default="")
+    method = Column(String(10), nullable=False, default="")
+    path = Column(String(255), nullable=False, default="")
+    target_type = Column(String(32), nullable=False, default="")
+    target_id = Column(Integer, nullable=False, default=0)
+    success = Column(SmallInteger, nullable=False, default=1)
+    message = Column(String(255), nullable=False, default="")
+    ip = Column(String(64), nullable=False, default="")
+    created_at = Column(DateTime, nullable=True)
+
+
+class NovelAutomation(Base):
+    """小说自动化设置：定时续写、大纲快用完时自动续写大纲"""
+    __tablename__ = "novel_automation"
+    novel_id = Column(Integer, primary_key=True, autoincrement=False)
+    schedule_enabled = Column(SmallInteger, nullable=False, default=0)
+    schedule_time = Column(String(5), nullable=False, default="08:00")
+    chapters_per_run = Column(Integer, nullable=False, default=1)
+    target_words = Column(Integer, nullable=False, default=0)
+    last_run_date = Column(Date, nullable=True)
+    last_run_message = Column(String(255), nullable=False, default="")
+    auto_extend_outline = Column(SmallInteger, nullable=False, default=0)
+    extend_chapters = Column(Integer, nullable=False, default=10)
+    updated_at = Column(DateTime, nullable=True)

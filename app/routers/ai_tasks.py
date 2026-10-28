@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/admin/ai/tasks", tags=["ai-tasks"])
 
 TERMINAL = ("success", "failed", "cancelled")
 
-PARAMS_ALLOWED = {"chapter_no", "target_words", "instruction", "remaining"}
+PARAMS_ALLOWED = {"chapter_no", "target_words", "instruction", "remaining", "chapters"}
 
 
 @router.get("")

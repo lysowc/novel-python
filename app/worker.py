@@ -47,6 +47,9 @@ def main() -> None:
         recover_stuck_tasks()
         return
     print("[worker] AI 任务消费进程已启动，队列:", QUEUE_KEY)
+    # 定时续写 / 回收站清理（多个 worker 都启动，靠 Redis 锁保证同一时间只有一个在跑）
+    from app.services import scheduler
+    scheduler.start_background()
     while True:
         task_id = None
         try:

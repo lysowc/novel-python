@@ -3,6 +3,8 @@
 对齐 PHP 版 AiClient 的行为：默认 Provider/Model、SSE 解析、usage 提取、日志落库。
 """
 import json
+import queue
+import threading
 import time
 
 import httpx
@@ -64,6 +66,27 @@ def default_target(db: Session) -> tuple[AiProvider, AiModel] | None:
     if not provider or not model:
         return None
     return provider, model
+
+
+# 辅助类调用（摘要、记忆、审校、质量检查）可以走更便宜的模型；其余（正文、设定、大纲、点子聊天）走写作模型
+AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "consistency_check", "quality_check"}
+
+
+def resolve_target(db: Session, task_type: str = "") -> tuple[AiProvider, AiModel] | None:
+    """按任务类型选模型：系统设置里指定了「写作模型 / 辅助模型」就用它（连同它所属的 Provider），否则用默认"""
+    key = "model_auxiliary_id" if task_type in AUXILIARY_TASK_TYPES else "model_writing_id"
+    try:
+        model_id = int(float(config_value(db, key, 0)))
+    except (TypeError, ValueError):
+        model_id = 0
+    if model_id > 0:
+        model = db.query(AiModel).filter(AiModel.id == model_id, AiModel.status == 1).first()
+        if model:
+            provider = db.query(AiProvider).filter(
+                AiProvider.id == model.provider_id, AiProvider.status == 1).first()
+            if provider:
+                return provider, model
+    return default_target(db)
 
 
 def endpoint(provider: AiProvider) -> str:
@@ -153,8 +176,8 @@ class AiClient:
         finally:
             executor.shutdown(wait=False)
 
-    def _resolve(self):
-        target = default_target(self.db)
+    def _resolve(self, task_type: str = ""):
+        target = resolve_target(self.db, task_type)
         if not target:
             raise AiFatalError("没有可用的 AI Provider/Model，请先在 AI 配置中添加并启用")
         return target
@@ -184,8 +207,8 @@ class AiClient:
     def chat(self, messages: list[dict], options: dict | None = None) -> dict:
         """非流式对话 → {text, usage, provider, model, duration}"""
         options = options or {}
-        provider, model = self._resolve()
         task_type = str(options.get("task_type", "chat"))
+        provider, model = self._resolve(task_type)
         prompt = _system_prompt(messages)
         timeout = int(options.get("timeout") or 0) or int(
             float(config_value(self.db, "ai_http_timeout", settings.ai_http_timeout))
@@ -231,97 +254,157 @@ class AiClient:
 
     def chat_stream(self, messages: list[dict], options: dict | None = None,
                     on_delta=None, on_stage=None) -> dict:
-        """流式对话（SSE 解析），增量回调 on_delta(text)"""
-        options = options or {}
-        provider, model = self._resolve()
-        task_type = str(options.get("task_type", "chat"))
-        prompt = _system_prompt(messages)
+        """流式对话（SSE 解析），增量回调 on_delta(text)
 
+        网络读取放在后台线程，主线程每 0.5 秒检查一次 cancel_check：
+        即使模型还没吐出第一个字（排队、长思考），取消也能立即生效。
+        返回 {text, usage, provider, model, duration, finish_reason, done}
+        """
+        options = options or {}
+        task_type = str(options.get("task_type", "chat"))
+        provider, model = self._resolve(task_type)
+        prompt = _system_prompt(messages)
         payload = self._build_payload(messages, model, options, stream=True)
         start = time.time()
+
+        events: queue.Queue = queue.Queue()
+        stop = threading.Event()
+        holder: dict = {}
+
+        def produce() -> None:
+            try:
+                # 不设总超时，但设连接超时 + 读超时（长时间生成，但防止流挂起永久卡住 worker）
+                with httpx.Client(timeout=httpx.Timeout(None, connect=20, read=300)) as client:
+                    holder["client"] = client
+                    with client.stream("POST", endpoint(provider), json=payload, headers=_headers(provider)) as resp:
+                        if resp.status_code != 200:
+                            err = f"HTTP {resp.status_code}"
+                            try:
+                                body = json.loads(resp.read().decode("utf-8", "ignore"))
+                                if isinstance(body, dict):
+                                    err = str(body.get("error", {}).get("message", err))
+                            except (ValueError, UnicodeDecodeError):
+                                pass
+                            events.put(("http_error", (resp.status_code, err)))
+                            return
+                        events.put(("start", None))
+                        for line in resp.iter_lines():
+                            if stop.is_set():
+                                return
+                            events.put(("line", line))
+                events.put(("end", None))
+            except Exception as e:  # noqa: BLE001
+                if not stop.is_set():
+                    events.put(("error", e))
+
+        def abort() -> None:
+            stop.set()
+            client = holder.get("client")
+            if client is not None:
+                try:
+                    client.close()  # 让后台线程的网络读取尽快结束
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def next_event():
+            while True:
+                try:
+                    return events.get(timeout=0.5)
+                except queue.Empty:
+                    if self.cancel_check is not None:
+                        self.cancel_check()  # 被取消时抛 CallbackAbort
+
+        threading.Thread(target=produce, daemon=True).start()
+        text = ""
+        usage: dict = {}
+        finish_reason = ""
+        done = False
+        started = False
+        read_error: str | None = None
+        duration = 0
         try:
-            # 流式：不设总超时，但设连接超时 + 读超时（长时间生成，但防止流挂起永久卡住 worker）
-            # 用 with 管理 Client，调用结束即释放连接（此前每次调用都泄漏一个连接池）
-            with httpx.Client(timeout=httpx.Timeout(None, connect=20, read=300)) as client, \
-                    client.stream("POST", endpoint(provider), json=payload, headers=_headers(provider)) as resp:
-                duration = int((time.time() - start) * 1000)
-                if resp.status_code != 200:
-                    err = f"HTTP {resp.status_code}"
-                    try:
-                        err_body = resp.read().decode("utf-8", "ignore")
-                        body = json.loads(err_body)
-                        if isinstance(body, dict):
-                            err = str(body.get("error", {}).get("message", err))
-                    except (ValueError, UnicodeDecodeError):
-                        pass
-                    if resp.status_code in (400, 422) and "stream_options" in payload:
+            while True:
+                kind, value = next_event()
+                if kind == "http_error":
+                    status_code, err = value
+                    duration = int((time.time() - start) * 1000)
+                    if status_code in (400, 422) and "stream_options" in payload:
                         # 服务不支持 stream_options：去掉后重试一次
                         return self.chat_stream(messages, {**options, "include_usage": False}, on_delta, on_stage)
                     log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt, self.novel_id)
-                    raise _http_error(resp.status_code, err)
-
-                on_stage and on_stage("stream_start")
-                text = ""
-                usage: dict = {}
-                finished = False
-                read_error: str | None = None
+                    raise _http_error(status_code, err)
+                if kind == "start":
+                    started = True
+                    duration = int((time.time() - start) * 1000)
+                    on_stage and on_stage("stream_start")
+                    continue
+                if kind == "error":
+                    if not started:
+                        raise value
+                    read_error = str(value)
+                    break
+                if kind == "end":
+                    break
+                line = (value or "").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    done = True
+                    break
                 try:
-                    for line in resp.iter_lines():
-                        line = (line or "").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            finished = True
-                            break
-                        try:
-                            event = json.loads(data)
-                        except ValueError:
-                            continue
-                        if not isinstance(event, dict):
-                            continue
-                        if isinstance(event.get("usage"), dict):
-                            usage = event["usage"]
-                        choices = event.get("choices") or []
-                        delta = ""
-                        if choices and isinstance(choices[0], dict):
-                            delta = (
-                                choices[0].get("delta", {}).get("content")
-                                or choices[0].get("message", {}).get("content")
-                                or choices[0].get("text")
-                                or ""
-                            )
-                        if isinstance(delta, str) and delta:
-                            text += delta
-                            on_delta and on_delta(delta)
-                except CallbackAbort:
-                    raise
-                except Exception as e:
-                    read_error = str(e)
-                on_stage and on_stage("stream_end")
-
-                if text == "" and read_error:
-                    log_call(self.db, task_type, provider, model, usage, duration,
-                             "failed", "流式读取中断: " + read_error, prompt, self.novel_id)
-                    raise RuntimeError(f"AI 流式输出中断: {read_error}")
-
-                if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
-                    usage = estimate_usage(messages, text)
-                log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
-                return {
-                    "text": text,
-                    "usage": usage,
-                    "provider": provider.name,
-                    "model": model.name,
-                    "duration": duration,
-                }
+                    event = json.loads(data)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if isinstance(event.get("usage"), dict):
+                    usage = event["usage"]
+                choices = event.get("choices") or []
+                delta = ""
+                if choices and isinstance(choices[0], dict):
+                    finish_reason = choices[0].get("finish_reason") or finish_reason
+                    delta = (
+                        (choices[0].get("delta") or {}).get("content")
+                        or (choices[0].get("message") or {}).get("content")
+                        or choices[0].get("text")
+                        or ""
+                    )
+                if isinstance(delta, str) and delta:
+                    text += delta
+                    on_delta and on_delta(delta)
         except RuntimeError:
+            abort()
             raise
         except CallbackAbort:
-            duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", "已取消", prompt, self.novel_id)
+            abort()
+            log_call(self.db, task_type, provider, model, {}, int((time.time() - start) * 1000),
+                     "failed", "已取消", prompt, self.novel_id)
             raise
         except Exception as e:
-            duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id)
+            abort()
+            log_call(self.db, task_type, provider, model, {}, int((time.time() - start) * 1000),
+                     "failed", str(e), prompt, self.novel_id)
             raise RuntimeError(f"AI 请求失败: {e}") from e
+        abort()
+        on_stage and on_stage("stream_end")
+
+        if text == "" and read_error:
+            log_call(self.db, task_type, provider, model, usage, duration,
+                     "failed", "流式读取中断: " + read_error, prompt, self.novel_id)
+            raise RuntimeError(f"AI 流式输出中断: {read_error}")
+        if read_error and not finish_reason:
+            finish_reason = "interrupted"
+
+        if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
+            usage = estimate_usage(messages, text)
+        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
+        return {
+            "text": text,
+            "usage": usage,
+            "provider": provider.name,
+            "model": model.name,
+            "duration": duration,
+            "finish_reason": finish_reason,
+            "done": done,
+        }
