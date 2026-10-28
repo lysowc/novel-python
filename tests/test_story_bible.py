@@ -296,7 +296,7 @@ def test_reasoning_effort_by_task_type(S):
     assert p["reasoning_effort"] == "none" and p["max_tokens"] == 6144, "辅助任务默认不思考，也不需要推理余量"
     p = payload(ds, model, "consistency_check")
     assert p["reasoning_effort"] == "low" and p["max_tokens"] > 4096 + 16000
-    assert payload(ds, model, "continue_chapter")["reasoning_effort"] == "high"
+    assert payload(ds, model, "continue_chapter")["reasoning_effort"] == "none", "写正文默认不思考"
     assert "reasoning_effort" not in payload(other, model.__class__(provider_id=2, name="gpt-x"), "update_memory")
     _config(S, reasoning_auxiliary="low", reasoning_writing="off")
     db.expire_all()

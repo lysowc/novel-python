@@ -99,7 +99,7 @@ AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "
 # 思考强度（DeepSeek 的 reasoning_effort：none 关闭思考 / low / high / max）。
 # 摘要、记忆这类整理活不需要深度思考：关掉后不会再出现"思考用光输出额度、正文为空"，也更省钱。
 REASONING_KEYS = {"writing": "reasoning_writing", "auxiliary": "reasoning_auxiliary", "review": "reasoning_review"}
-REASONING_DEFAULTS = {"reasoning_writing": "high", "reasoning_auxiliary": "none", "reasoning_review": "low"}
+REASONING_DEFAULTS = {"reasoning_writing": "none", "reasoning_auxiliary": "none", "reasoning_review": "low"}
 REASONING_VALUES = ("none", "low", "high", "max")
 REVIEW_TASK_TYPES = {"consistency_check", "outline_sync"}  # 需要一点推理：找矛盾、调整后续大纲
 

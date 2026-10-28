@@ -57,7 +57,7 @@ CONFIG_DEFAULTS = {
     "quality_check_enabled": "1", "quality_min_ratio": "0.5",
     "auto_rebuild_memory": "1", "outline_warn_remaining": "3",
     "arc_summary_size": "20", "repetition_check_enabled": "1",
-    "reasoning_writing": "high", "reasoning_auxiliary": "none", "reasoning_review": "low",
+    "reasoning_writing": "none", "reasoning_auxiliary": "none", "reasoning_review": "low",
     "outline_sync_enabled": "1",
 }
 
