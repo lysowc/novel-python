@@ -5,7 +5,7 @@ import type {
   ChapterRead, ConsistencyReport, Dashboard, HomeData, Idea, IdeaMessage,
   LoginResult, Memory, Novel, NovelDetail, NovelSetting, PageResult, Prompt,
   SystemConfig, TaskType, UsageStats, NovelAutomation, OperationLog, OutlineStatus,
-  StoryBible, CharacterProfile, StoryTerm, ArcSummary,
+  StoryBible, CharacterProfile, StoryTerm, ArcSummary, AiLogDetail,
 } from '@/types/api'
 import { http, withQuery } from './http'
 import { readStream, type StreamHandlers } from './sse'
@@ -458,9 +458,15 @@ export function fetchUsage(params: { days?: number; novel_id?: number }) {
   return http.get<UsageStats>(withQuery('/admin/stats/usage', params))
 }
 
-export function fetchLogs(params: { page?: number; page_size?: number }) {
+export function fetchLogs(params: {
+  page?: number; page_size?: number; keyword?: string; novel_id?: number | string; task_type?: string; status?: string
+}) {
   if (USE_MOCK) return mockApi.logList(params)
   return http.get<PageResult<AiLog>>(withQuery('/admin/ai/logs', params))
+}
+
+export function fetchLogDetail(id: number) {
+  return http.get<AiLogDetail>(`/admin/ai/logs/${id}`)
 }
 
 export function clearLogs() {

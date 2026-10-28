@@ -93,5 +93,7 @@ def f_log(l: AiLog) -> dict:
         "prompt": l.prompt, "prompt_tokens": l.prompt_tokens,
         "completion_tokens": l.completion_tokens, "total_tokens": l.total_tokens,
         "duration": l.duration, "status": l.status, "error_message": l.error_message,
+        "temperature": float(l.temperature) if l.temperature is not None else None,
+        "reasoning": l.reasoning or "", "max_tokens": l.max_tokens or 0,
         "created_at": dt_str(l.created_at),
     }

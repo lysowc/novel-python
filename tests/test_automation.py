@@ -11,6 +11,7 @@ from app.helpers import now
 from app.models import AiLog, AiModel, AiProvider, AiTask, Chapter, Novel, NovelAutomation, SystemConfig
 from app.services import ai_client, budget, scheduler, task_service as ts
 from conftest import add_chapter, make_novel, run_task
+from test_api import client  # noqa: F401  复用登录好的 TestClient
 
 
 def set_config(S, **values):
@@ -296,3 +297,47 @@ def test_chat_null_content_and_max_tokens_rejected_retry(S, monkeypatch):
     with pytest.raises(RuntimeError, match="思考上"):
         ai_client.AiClient(S()).chat([{"role": "user", "content": "u"}], {"task_type": "x", "max_tokens": 4000})
     assert seen == [4000 + ai_client.REASONING_HEADROOM, 4000], "超限时去掉余量重试一次"
+
+
+# ---------- AI 日志记录参数和完整输入输出 ----------
+
+def test_ai_log_records_params_input_output_reasoning(S, monkeypatch):
+    add_model(S, "m", default=1)
+    chunks = _sse({"choices": [{"delta": {"content": None, "reasoning_content": "先想想沈砚"}}]},
+                  {"choices": [{"delta": {"content": "沈砚推门"}}]},
+                  {"choices": [{"delta": {"content": "而入"}, "finish_reason": "stop"}]})
+    _patch_http(monkeypatch, lambda request: httpx.Response(200, stream=SlowStream(chunks)))
+    ai_client.AiClient(S(), novel_id=3).chat_stream(
+        [{"role": "system", "content": "你是作家"}, {"role": "user", "content": "写第5章：雁回镇"}],
+        {"task_type": "continue_chapter", "max_tokens": 3000, "temperature": 1.2})
+    _patch_http(monkeypatch, lambda request: httpx.Response(200, json={
+        "choices": [{"message": {"content": "{\"ok\": 1}", "reasoning_content": "整理一下"}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3}}))
+    ai_client.AiClient(S(), novel_id=3).chat(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "第一问"},
+         {"role": "assistant", "content": "答"}, {"role": "user", "content": "第二问"}], {"task_type": "update_memory"})
+    a, b = S().query(AiLog).order_by(AiLog.id).all()
+    assert a.input_text == "写第5章：雁回镇" and a.output_text == "沈砚推门而入" and a.reasoning_text == "先想想沈砚"
+    assert float(a.temperature) == 1.2 and a.max_tokens >= 3000 and a.prompt == "你是作家"
+    assert b.output_text == '{"ok": 1}' and b.reasoning_text == "整理一下"
+    assert b.input_text == "[user]\n第一问\n\n[assistant]\n答\n\n[user]\n第二问", "system 单独记在 prompt，不重复记"
+
+
+def test_ai_logs_search_and_detail(S, client):
+    db = S()
+    db.add_all([
+        AiLog(novel_id=3, task_type="continue_chapter", status="success", prompt="p", input_text="大纲：樟木箱子",
+              output_text="沈砚" + "很长的正文" * 50 + "撬开了樟木箱子，里头是一本账册", reasoning="none", temperature=1.0),
+        AiLog(novel_id=4, task_type="update_memory", status="failed", input_text="别的", output_text="无关"),
+    ])
+    db.commit()
+    db.close()
+    data = client.get("/api/admin/ai/logs", params={"keyword": "樟木箱子"}).json()["data"]
+    assert data["total"] == 1
+    row = data["list"][0]
+    assert row["match"]["field"] == "output_text" and "撬开了樟木箱子" in row["match"]["text"]
+    assert "output_text" not in row and row["has_io"] == 1 and row["reasoning"] == "none" and row["temperature"] == 1.0
+    assert client.get("/api/admin/ai/logs", params={"novel_id": 4, "status": "failed"}).json()["data"]["total"] == 1
+    assert client.get("/api/admin/ai/logs", params={"task_type": "update_memory"}).json()["data"]["total"] == 1
+    detail = client.get(f"/api/admin/ai/logs/{row['id']}").json()["data"]
+    assert detail["output_text"].endswith("里头是一本账册") and detail["input_text"] == "大纲：樟木箱子"

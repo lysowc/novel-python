@@ -198,13 +198,67 @@ def prompt_update(pid: int, payload: dict, db: Session = Depends(get_db)):
 
 # ============ AI 日志 ============
 
+def _snippet(text: str | None, keyword: str, before: int = 40, after: int = 100) -> str:
+    """关键词在长文本里第一次出现处的前后文"""
+    if not text or not keyword:
+        return ""
+    i = text.find(keyword)
+    if i < 0:
+        i = text.lower().find(keyword.lower())
+    if i < 0:
+        return ""
+    start = max(0, i - before)
+    end = min(len(text), i + len(keyword) + after)
+    return ("…" if start else "") + text[start:end].replace("\n", " ") + ("…" if end < len(text) else "")
+
+
 @router.get("/ai/logs")
-def ai_logs(page: int = Query(1), page_size: int = Query(20), db: Session = Depends(get_db)):
+def ai_logs(page: int = Query(1), page_size: int = Query(20), keyword: str = Query(""),
+            novel_id: int = Query(0), task_type: str = Query(""), status: str = Query(""),
+            db: Session = Depends(get_db)):
+    """AI 日志列表。keyword 搜 system prompt、输入、输出、思考过程、错误信息"""
     page = max(1, page)
     page_size = min(100, max(1, page_size))
-    total = db.query(AiLog).count()
-    rows = db.query(AiLog).order_by(AiLog.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return ok({"list": [f_log(l) for l in rows], "total": total, "page": page, "page_size": page_size})
+    keyword = keyword.strip()
+    q = db.query(AiLog)
+    if novel_id:
+        q = q.filter(AiLog.novel_id == novel_id)
+    if task_type:
+        q = q.filter(AiLog.task_type == task_type)
+    if status in ("success", "failed"):
+        q = q.filter(AiLog.status == status)
+    if keyword:
+        like = f"%{keyword}%"
+        q = q.filter(AiLog.output_text.like(like) | AiLog.input_text.like(like) | AiLog.prompt.like(like)
+                     | AiLog.reasoning_text.like(like) | AiLog.error_message.like(like))
+    total = q.count()
+    rows = q.order_by(AiLog.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for row in rows:
+        item = f_log(row)
+        item.pop("prompt", None)  # 大字段放到详情接口
+        item["has_io"] = 1 if (row.input_text or row.output_text) else 0
+        item["has_prompt"] = 1 if row.prompt else 0
+        if keyword:
+            for field, label in (("output_text", "输出"), ("input_text", "输入"), ("reasoning_text", "思考"),
+                                 ("prompt", "Prompt"), ("error_message", "错误")):
+                snip = _snippet(getattr(row, field), keyword)
+                if snip:
+                    item["match"] = {"field": field, "label": label, "text": snip}
+                    break
+        items.append(item)
+    return ok({"list": items, "total": total, "page": page, "page_size": page_size})
+
+
+@router.get("/ai/logs/{log_id}")
+def ai_log_detail(log_id: int, db: Session = Depends(get_db)):
+    row = db.query(AiLog).filter(AiLog.id == log_id).first()
+    if not row:
+        return fail("日志不存在")
+    item = f_log(row)
+    item.update({"input_text": row.input_text or "", "output_text": row.output_text or "",
+                 "reasoning_text": row.reasoning_text or ""})
+    return ok(item)
 
 
 @router.delete("/ai/logs")

@@ -3,6 +3,7 @@
 from sqlalchemy import (
     BigInteger, Column, Date, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text, UniqueConstraint,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -280,12 +281,18 @@ class AiLog(Base):
     model = Column(String(128), nullable=False, default="")
     task_type = Column(String(64), nullable=False, default="")
     prompt = Column(Text, nullable=True)
+    input_text = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)      # 除 system 外发给 AI 的全部消息
+    output_text = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)     # AI 返回的正文
+    reasoning_text = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)  # 思考过程（开启思考时）
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
     cost = Column(Numeric(14, 6), nullable=False, default=0)
     usage_estimated = Column(SmallInteger, nullable=False, default=0)  # 1 = 接口未返回 usage，按字数估算
     duration = Column(Integer, nullable=False, default=0)
+    temperature = Column(Numeric(4, 2), nullable=True)
+    reasoning = Column(String(16), nullable=False, default="")  # 思考强度：none/low/high/max，空 = 未传
+    max_tokens = Column(Integer, nullable=False, default=0)
     status = Column(String(20), nullable=False, default="success")
     error_message = Column(String(1000), nullable=False, default="")
     created_at = Column(DateTime, nullable=True)

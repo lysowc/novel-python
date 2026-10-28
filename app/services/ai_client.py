@@ -164,7 +164,9 @@ def estimate_usage(messages: list[dict], text: str) -> dict:
 
 def log_call(db: Session, task_type: str, provider: AiProvider, model: AiModel,
              usage: dict, duration_ms: int, status: str, error: str = "", prompt: str = "",
-             novel_id: int = 0) -> None:
+             novel_id: int = 0, trace: dict | None = None) -> None:
+    """trace：本次调用的参数和完整输入/输出（temperature、reasoning、max_tokens、input_text、output_text、reasoning_text）"""
+    trace = trace or {}
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
     total_tokens = int(usage.get("total_tokens") or 0) or prompt_tokens + completion_tokens
@@ -184,6 +186,12 @@ def log_call(db: Session, task_type: str, provider: AiProvider, model: AiModel,
         duration=duration_ms,
         status=status,
         error_message=error[:900],
+        temperature=trace.get("temperature"),
+        reasoning=str(trace.get("reasoning") or "")[:16],
+        max_tokens=int(trace.get("max_tokens") or 0),
+        input_text=trace.get("input_text") or None,
+        output_text=trace.get("output_text") or None,
+        reasoning_text=trace.get("reasoning_text") or None,
         created_at=now(),
     )
     db.add(row)
@@ -195,6 +203,20 @@ def _headers(provider: AiProvider) -> dict:
     if provider.api_key:
         headers["Authorization"] = "Bearer " + provider.api_key
     return headers
+
+
+def _input_text(messages: list[dict]) -> str:
+    """除 system 外的全部消息（多轮对话时标出角色），记进 AI 日志"""
+    rest = [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
+    if len(rest) == 1:
+        return str(rest[0].get("content") or "")
+    return "\n\n".join(f"[{m.get('role')}]\n{m.get('content') or ''}" for m in rest)
+
+
+def _trace(messages: list[dict], payload: dict, options: dict) -> dict:
+    return {"temperature": payload.get("temperature"), "reasoning": options.get("_reasoning") or "",
+            "max_tokens": payload.get("max_tokens") or 0, "input_text": _input_text(messages),
+            "output_text": "", "reasoning_text": ""}
 
 
 def _system_prompt(messages: list[dict]) -> str:
@@ -289,17 +311,18 @@ class AiClient:
 
         options = self._reasoning_options(provider, model, task_type, options)
         payload = self._build_payload(messages, model, options, stream=False)
+        trace = _trace(messages, payload, options)
         start = time.time()
         try:
             with httpx.Client(timeout=httpx.Timeout(timeout, connect=20), follow_redirects=True) as client:
                 resp = self._post_cancellable(client, endpoint(provider), payload, _headers(provider))
         except CallbackAbort:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", "已取消", prompt, self.novel_id)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", "已取消", prompt, self.novel_id, trace)
             raise
         except Exception as e:
             duration = int((time.time() - start) * 1000)
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(e), prompt, self.novel_id, trace)
             raise RuntimeError(f"AI 请求失败: {e}") from e
         duration = int((time.time() - start) * 1000)
 
@@ -314,19 +337,21 @@ class AiClient:
                 return self.chat(messages, {**options, "_no_headroom": True})
             if _reasoning_rejected(resp.status_code, str(err)) and options.get("_reasoning"):
                 return self.chat(messages, {**options, "_reasoning": ""})
-            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt, self.novel_id)
+            log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt, self.novel_id, trace)
             raise _http_error(resp.status_code, str(err))
 
         choice = body["choices"][0] if body["choices"] else {}
         text = str((choice.get("message") or {}).get("content") or "")  # 思考型模型可能给 null
+        trace["output_text"] = text
+        trace["reasoning_text"] = str((choice.get("message") or {}).get("reasoning_content") or "")
         if not text.strip() and choice.get("finish_reason") == "length":
             log_call(self.db, task_type, provider, model, body.get("usage") or {}, duration, "failed",
-                     THINKING_EXHAUSTED, prompt, self.novel_id)
+                     THINKING_EXHAUSTED, prompt, self.novel_id, trace)
             raise RuntimeError(THINKING_EXHAUSTED)
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
         if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
             usage = estimate_usage(messages, text)
-        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
+        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id, trace)
         return {
             "text": text,
             "usage": usage,
@@ -349,6 +374,7 @@ class AiClient:
         prompt = _system_prompt(messages)
         options = self._reasoning_options(provider, model, task_type, options)
         payload = self._build_payload(messages, model, options, stream=True)
+        trace = _trace(messages, payload, options)
         start = time.time()
 
         events: queue.Queue = queue.Queue()
@@ -420,7 +446,7 @@ class AiClient:
                     if status_code in (400, 422) and "stream_options" in payload:
                         # 服务不支持 stream_options：去掉后重试一次
                         return self.chat_stream(messages, {**options, "include_usage": False}, on_delta, on_stage)
-                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt, self.novel_id)
+                    log_call(self.db, task_type, provider, model, {}, duration, "failed", err, prompt, self.novel_id, trace)
                     raise _http_error(status_code, err)
                 if kind == "start":
                     started = True
@@ -453,6 +479,9 @@ class AiClient:
                 delta = ""
                 if choices and isinstance(choices[0], dict):
                     finish_reason = choices[0].get("finish_reason") or finish_reason
+                    reasoning_delta = (choices[0].get("delta") or {}).get("reasoning_content")
+                    if isinstance(reasoning_delta, str):
+                        trace["reasoning_text"] += reasoning_delta
                     if not thinking_notified and not text and (choices[0].get("delta") or {}).get("reasoning_content"):
                         thinking_notified = True
                         on_stage and on_stage("thinking", "模型正在思考…（思考型模型会先推理再写正文）")
@@ -470,32 +499,35 @@ class AiClient:
             raise
         except CallbackAbort:
             abort()
+            trace["output_text"] = text
             log_call(self.db, task_type, provider, model, {}, int((time.time() - start) * 1000),
-                     "failed", "已取消", prompt, self.novel_id)
+                     "failed", "已取消", prompt, self.novel_id, trace)
             raise
         except Exception as e:
             abort()
+            trace["output_text"] = text
             log_call(self.db, task_type, provider, model, {}, int((time.time() - start) * 1000),
-                     "failed", str(e), prompt, self.novel_id)
+                     "failed", str(e), prompt, self.novel_id, trace)
             raise RuntimeError(f"AI 请求失败: {e}") from e
         abort()
+        trace["output_text"] = text
         duration = int((time.time() - start) * 1000)  # 记录整个生成耗时（此前只记了等到响应头的时间）
         on_stage and on_stage("stream_end")
 
         if not text.strip() and finish_reason == "length":
             log_call(self.db, task_type, provider, model, usage, duration, "failed", THINKING_EXHAUSTED,
-                     prompt, self.novel_id)
+                     prompt, self.novel_id, trace)
             raise RuntimeError(THINKING_EXHAUSTED)
         if text == "" and read_error:
             log_call(self.db, task_type, provider, model, usage, duration,
-                     "failed", "流式读取中断: " + read_error, prompt, self.novel_id)
+                     "failed", "流式读取中断: " + read_error, prompt, self.novel_id, trace)
             raise RuntimeError(f"AI 流式输出中断: {read_error}")
         if read_error and not finish_reason:
             finish_reason = "interrupted"
 
         if not usage.get("total_tokens") and not usage.get("prompt_tokens"):
             usage = estimate_usage(messages, text)
-        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id)
+        log_call(self.db, task_type, provider, model, usage, duration, "success", "", prompt, self.novel_id, trace)
         return {
             "text": text,
             "usage": usage,

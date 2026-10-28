@@ -211,17 +211,36 @@ export interface AiTask {
 
 export interface AiLog {
   id: number
+  novel_id?: number
   provider: string
   model: string
   task_type: string
-  prompt: string
+  /** 列表接口不返回（has_prompt 表示有），详情接口返回 */
+  prompt?: string
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  cost?: number
   duration: number // 毫秒
   status: 'success' | 'failed'
   error_message: string
+  /** 本次调用的温度；null = 旧日志没记录 */
+  temperature?: number | null
+  /** 思考强度：none / low / high / max；空 = 没传（旧日志或非 DeepSeek） */
+  reasoning?: string
+  max_tokens?: number
+  has_io?: number
+  has_prompt?: number
+  /** 搜索时：关键词所在位置的前后文 */
+  match?: { field: string; label: string; text: string }
   created_at: string
+}
+
+export interface AiLogDetail extends AiLog {
+  prompt: string
+  input_text: string
+  output_text: string
+  reasoning_text: string
 }
 
 export interface NovelSetting {
