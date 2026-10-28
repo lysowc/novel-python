@@ -38,7 +38,7 @@ const taskStatusMap: Record<TaskStatus, { label: string; cls: string; icon: type
 const taskTypeLabel: Record<string, string> = {
   generate_setting: '生成设定', generate_outline: '生成大纲', generate_chapter: '生成章节',
   continue_chapter: '续写章节', regenerate_chapter: '重新生成', generate_summary: '生成摘要',
-  update_memory: '更新记忆', rebuild_memory: '重建记忆', idea_chat: '点子聊天', idea_save: '点子保存',
+  update_memory: '更新记忆', rebuild_memory: '重建记忆', extend_outline: '续写大纲', idea_chat: '点子聊天', idea_save: '点子保存',
   consistency_check: '一致性审校',
 }
 
@@ -75,6 +75,13 @@ onMounted(load)
     >
       <p class="font-medium text-destructive">安全提醒</p>
       <p v-for="(w, i) in data.security_warnings" :key="i" class="text-muted-foreground">{{ w }}</p>
+    </div>
+    <div v-if="data?.outline_warnings?.length" class="space-y-1.5 rounded-xl border border-dashed border-foreground/30 px-4 py-3 text-sm">
+      <p class="font-medium">大纲快用完了</p>
+      <p v-for="w in data.outline_warnings" :key="w.novel_id" class="text-muted-foreground">
+        <RouterLink :to="`/admin/novels/${w.novel_id}`" class="text-foreground underline-offset-2 hover:underline">《{{ w.title }}》</RouterLink>
+        {{ w.remaining > 0 ? `大纲只剩 ${w.remaining} 章` : '大纲已经写完' }}（规划到第 {{ w.outline_max }} 章）
+      </p>
     </div>
     <!-- 统计卡片 -->
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-5 xl:grid-cols-6">

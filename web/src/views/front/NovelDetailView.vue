@@ -2,7 +2,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, BookOpen, Clock3, FileText, Layers, ListTree, Play } from '@lucide/vue'
+import { ArrowLeft, BookOpen, Bookmark as BookmarkIcon, Clock3, FileText, Layers, ListTree, Play, X } from '@lucide/vue'
 import FrontNav from '@/components/front/FrontNav.vue'
 import FrontFooter from '@/components/front/FrontFooter.vue'
 import CoverArt from '@/components/common/CoverArt.vue'
@@ -32,6 +32,8 @@ const startNo = computed(() => {
   if (p && chapters.value.some((c) => c.chapter_no === p.no)) return p.no
   return novel.value?.first_no || 1
 })
+
+const bookmarks = computed(() => reader.bookmarksOf(Number(id.value)))
 
 const tags = computed(() =>
   (novel.value?.tags || '').split(/[,，]/).map((t) => t.trim()).filter(Boolean),
@@ -158,6 +160,39 @@ onMounted(async () => {
             </div>
           </div>
         </div>
+
+        <!-- 我的书签（存在本机浏览器） -->
+        <section v-if="bookmarks.length" class="mt-12">
+          <h2 class="mb-4 flex items-center gap-2 text-lg font-semibold">
+            <BookmarkIcon class="size-5 text-primary" />
+            我的书签
+            <span class="text-sm font-normal text-muted-foreground">（{{ bookmarks.length }}）</span>
+          </h2>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <div
+              v-for="b in bookmarks"
+              :key="b.id"
+              class="group flex items-start gap-3 rounded-xl border bg-card px-4 py-3 transition-all hover:border-primary/30 hover:shadow-sm"
+            >
+              <RouterLink :to="{ path: `/read/${novel.id}/${b.no}`, query: { at: b.percent.toFixed(4) } }" class="min-w-0 flex-1">
+                <p class="text-sm font-medium group-hover:text-primary">
+                  第 {{ b.no }} 章 · {{ b.chapterTitle }}
+                  <span class="ml-1 text-xs font-normal text-muted-foreground">{{ Math.round(b.percent * 100) }}%</span>
+                </p>
+                <p class="mt-1 line-clamp-2 text-xs text-muted-foreground">{{ b.excerpt }}</p>
+                <p class="mt-1 text-[11px] text-muted-foreground/80">{{ formatRelative(new Date(b.createdAt).toISOString()) }}</p>
+              </RouterLink>
+              <button
+                type="button"
+                class="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="删除书签"
+                @click="reader.removeBookmark(b.id)"
+              >
+                <X class="size-3.5" />
+              </button>
+            </div>
+          </div>
+        </section>
 
         <!-- 章节目录 -->
         <section ref="chapterListRef" id="chapter-list" class="mt-12">

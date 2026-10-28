@@ -4,7 +4,7 @@ import type {
   AiLog, AiModel, AiProvider, AiTask, Category, Chapter, ChapterListItem, ChapterVersion,
   ChapterRead, ConsistencyReport, Dashboard, HomeData, Idea, IdeaMessage,
   LoginResult, Memory, Novel, NovelDetail, NovelSetting, PageResult, Prompt,
-  SystemConfig, TaskType, UsageStats,
+  SystemConfig, TaskType, UsageStats, NovelAutomation, OperationLog, OutlineStatus,
 } from '@/types/api'
 import { http, withQuery } from './http'
 import { readStream, type StreamHandlers } from './sse'
@@ -115,6 +115,36 @@ export function fetchAdminNovel(id: number | string) {
 export function updateNovel(id: number | string, body: Partial<Novel>) {
   if (USE_MOCK) return mockApi.updateNovel(Number(id), body)
   return http.put<Novel>(`/admin/novels/${id}`, body)
+}
+
+export function fetchTrashNovels(params: { page?: number; page_size?: number }) {
+  return http.get<PageResult<Novel> & { trash_total: number; trash_retention_days: number }>(
+    withQuery('/admin/novels', { ...params, trash: 1 }),
+  )
+}
+
+export function restoreNovel(id: number | string) {
+  return http.post<Novel>(`/admin/novels/${id}/restore`)
+}
+
+export function purgeNovel(id: number | string) {
+  return http.del<void>(`/admin/novels/${id}/purge`)
+}
+
+export function fetchNovelAutomation(id: number | string) {
+  return http.get<NovelAutomation>(`/admin/novels/${id}/automation`)
+}
+
+export function saveNovelAutomation(id: number | string, body: Partial<NovelAutomation>) {
+  return http.put<NovelAutomation>(`/admin/novels/${id}/automation`, body)
+}
+
+export function fetchOutlineStatus(id: number | string) {
+  return http.get<OutlineStatus>(`/admin/novels/${id}/outline-status`)
+}
+
+export function fetchOperationLogs(params: { page?: number; page_size?: number; keyword?: string; failed_only?: number }) {
+  return http.get<PageResult<OperationLog>>(withQuery('/admin/operation-logs', params))
 }
 
 export function deleteNovel(id: number | string) {

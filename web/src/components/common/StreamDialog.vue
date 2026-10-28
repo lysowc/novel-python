@@ -113,6 +113,9 @@ async function start() {
         onStatus: (s) => {
           statusText.value = s
         },
+        onReset: () => {
+          output.value = ''
+        },
         onDone: async (data) => {
           const evt = data as { status?: string; error_message?: string } | undefined
           if (evt?.status === 'cancelled') {

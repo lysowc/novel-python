@@ -16,6 +16,7 @@ import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import PaginationBar from '@/components/common/PaginationBar.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import TrashDialog from '@/components/admin/TrashDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
 import CoverArt from '@/components/common/CoverArt.vue'
 import {
@@ -50,6 +51,8 @@ const form = ref({
 
 // 删除
 const deleting = ref<Novel | null>(null)
+const trashOpen = ref(false)
+const trashTotal = ref(0)
 const deleteLoading = ref(false)
 
 // AI 续写
@@ -71,6 +74,7 @@ async function load() {
       category_id: categoryId.value !== '0' ? categoryId.value : undefined,
       status: status.value !== 'all' ? status.value : undefined,
     })
+    trashTotal.value = (list.value as { trash_total?: number }).trash_total ?? 0
   } finally {
     loading.value = false
   }
@@ -137,7 +141,7 @@ async function confirmDelete() {
   deleteLoading.value = true
   try {
     await deleteNovel(deleting.value.id)
-    toast.success('小说已删除')
+    toast.success('已移入回收站，可在「回收站」里恢复')
     deleting.value = null
     load()
   } catch {
@@ -182,6 +186,10 @@ onMounted(async () => {
   <div>
     <PageHeader title="小说管理" description="管理你的全部小说作品">
       <template #actions>
+        <Button variant="outline" class="gap-2" @click="trashOpen = true">
+          <Trash2 class="size-4" />
+          回收站<span v-if="trashTotal">（{{ trashTotal }}）</span>
+        </Button>
         <Button @click="openCreate">
           <Plus class="size-4" />
           新建小说
@@ -371,12 +379,14 @@ onMounted(async () => {
     <ConfirmDialog
       :open="!!deleting"
       title="删除小说"
-      :description="`确定要删除《${deleting?.title ?? ''}》吗？相关章节将一并删除，此操作无法撤销。`"
+      :description="`《${deleting?.title ?? ''}》会移入回收站，可以随时恢复；在回收站放满保留天数后才会彻底删除。`"
       confirm-text="删除"
       :loading="deleteLoading"
       @update:open="(v: boolean) => !v && (deleting = null)"
       @confirm="confirmDelete"
     />
+
+    <TrashDialog v-model:open="trashOpen" @changed="load" />
 
     <!-- AI 续写 -->
     <StreamDialog

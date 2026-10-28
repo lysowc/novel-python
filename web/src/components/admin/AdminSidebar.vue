@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
 import {
-  BarChart3, BookOpen, LayoutDashboard, Lightbulb, ScrollText, Settings2, Sparkles, Wrench,
+  BarChart3, BookOpen, ClipboardList, LayoutDashboard, Lightbulb, ScrollText, Settings2, Sparkles, Wrench,
 } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +15,7 @@ const items = [
   { to: '/admin/ai/prompts', label: 'Prompt 管理', icon: ScrollText },
   { to: '/admin/ai/usage', label: '用量统计', icon: BarChart3 },
   { to: '/admin/ai/logs', label: 'AI 日志', icon: Wrench },
+  { to: '/admin/oplogs', label: '操作记录', icon: ClipboardList },
   { to: '/admin/settings', label: '系统设置', icon: Settings2 },
 ]
 

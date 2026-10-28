@@ -16,7 +16,8 @@ import OutlineTab from './novel/OutlineTab.vue'
 import ChaptersTab from './novel/ChaptersTab.vue'
 import MemoryTab from './novel/MemoryTab.vue'
 import ConsistencyTab from './novel/ConsistencyTab.vue'
-import { exportNovel, fetchAdminNovel } from '@/api'
+import AutomationTab from './novel/AutomationTab.vue'
+import { exportNovel, fetchAdminNovel, restoreNovel } from '@/api'
 import { formatNumber } from '@/lib/format'
 import type { NovelDetail } from '@/types/api'
 
@@ -35,10 +36,21 @@ const tabItems = [
   { value: 'chapters', label: '章节' },
   { value: 'memory', label: '记忆' },
   { value: 'consistency', label: '审校' },
+  { value: 'automation', label: '自动化' },
 ]
 
 async function reload() {
   novel.value = await fetchAdminNovel(id.value)
+}
+
+async function restore() {
+  try {
+    await restoreNovel(id.value)
+    toast.success('已恢复')
+    reload()
+  } catch {
+    // 请求层已提示
+  }
 }
 
 onMounted(async () => {
@@ -117,8 +129,16 @@ async function doExport(format: 'txt' | 'md' | 'epub') {
         </div>
       </div>
 
+      <div
+        v-if="novel.deleted_at"
+        class="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm"
+      >
+        <span class="flex-1">这本小说在回收站里，读者看不到，也不能使用 AI。</span>
+        <Button size="sm" variant="outline" @click="restore">恢复</Button>
+      </div>
+
       <Tabs v-model="active" class="w-full">
-        <TabsList class="grid w-full grid-cols-6 sm:w-auto">
+        <TabsList class="grid w-full grid-cols-7 sm:w-auto">
           <TabsTrigger v-for="t in tabItems" :key="t.value" :value="t.value">
             {{ t.label }}
           </TabsTrigger>
@@ -140,6 +160,9 @@ async function doExport(format: 'txt' | 'md' | 'epub') {
         </TabsContent>
         <TabsContent value="consistency" class="mt-5">
           <ConsistencyTab :novel-id="Number(id)" />
+        </TabsContent>
+        <TabsContent value="automation" class="mt-5">
+          <AutomationTab :novel-id="Number(id)" :deleted="!!novel.deleted_at" />
         </TabsContent>
       </Tabs>
     </template>

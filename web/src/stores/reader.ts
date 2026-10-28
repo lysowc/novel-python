@@ -14,8 +14,40 @@ export interface ReadingProgress {
   updatedAt: number
 }
 
+/** 书签：存在读者自己的浏览器里（不需要登录） */
+export interface Bookmark {
+  id: string
+  novelId: number
+  novelTitle: string
+  no: number
+  chapterTitle: string
+  percent: number
+  scrollTop: number
+  excerpt: string
+  createdAt: number
+}
+
 const SETTINGS_KEY = 'reader-settings'
 const PROGRESS_KEY = 'reader-progress'
+const BOOKMARKS_KEY = 'reader-bookmarks'
+const MAX_BOOKMARKS = 300
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // 无痕模式或存储已满：本次会话内仍然有效
+  }
+}
 
 function loadSettings(): ReaderSettings {
   try {
@@ -36,13 +68,7 @@ function loadSettings(): ReaderSettings {
 }
 
 function loadProgress(): Record<number, ReadingProgress> {
-  try {
-    const raw = localStorage.getItem(PROGRESS_KEY)
-    if (raw) return JSON.parse(raw) as Record<number, ReadingProgress>
-  } catch {
-    // ignore
-  }
-  return {}
+  return readJson<Record<number, ReadingProgress>>(PROGRESS_KEY, {})
 }
 
 export const WIDTH_STYLES: Record<ReaderWidth, string> = {
@@ -56,6 +82,7 @@ export const useReaderStore = defineStore('reader', {
     fontSize: 18,
     width: 'medium' as ReaderWidth,
     progress: {} as Record<number, ReadingProgress>,
+    bookmarks: [] as Bookmark[],
     settingsLoaded: false,
   }),
   actions: {
@@ -65,6 +92,8 @@ export const useReaderStore = defineStore('reader', {
       this.fontSize = s.fontSize
       this.width = s.width
       this.progress = loadProgress()
+      const saved = readJson<Bookmark[]>(BOOKMARKS_KEY, [])
+      this.bookmarks = Array.isArray(saved) ? saved : []
       this.settingsLoaded = true
     },
     setFontSize(size: number) {
@@ -76,22 +105,32 @@ export const useReaderStore = defineStore('reader', {
       this.persistSettings()
     },
     persistSettings() {
-      localStorage.setItem(
-        SETTINGS_KEY,
-        JSON.stringify({ fontSize: this.fontSize, width: this.width }),
-      )
+      writeJson(SETTINGS_KEY, { fontSize: this.fontSize, width: this.width })
     },
     /** 保存阅读进度（节流由调用方处理） */
     saveProgress(novelId: number, p: ReadingProgress) {
       this.progress[novelId] = p
-      localStorage.setItem(PROGRESS_KEY, JSON.stringify(this.progress))
+      writeJson(PROGRESS_KEY, this.progress)
     },
     getProgress(novelId: number): ReadingProgress | undefined {
       return this.progress[novelId]
     },
     clearProgress(novelId: number) {
       delete this.progress[novelId]
-      localStorage.setItem(PROGRESS_KEY, JSON.stringify(this.progress))
+      writeJson(PROGRESS_KEY, this.progress)
+    },
+    addBookmark(b: Omit<Bookmark, 'id' | 'createdAt'>): Bookmark {
+      const bookmark: Bookmark = { ...b, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, createdAt: Date.now() }
+      this.bookmarks = [bookmark, ...this.bookmarks].slice(0, MAX_BOOKMARKS)
+      writeJson(BOOKMARKS_KEY, this.bookmarks)
+      return bookmark
+    },
+    removeBookmark(id: string) {
+      this.bookmarks = this.bookmarks.filter((b) => b.id !== id)
+      writeJson(BOOKMARKS_KEY, this.bookmarks)
+    },
+    bookmarksOf(novelId: number): Bookmark[] {
+      return this.bookmarks.filter((b) => b.novelId === novelId)
     },
   },
 })

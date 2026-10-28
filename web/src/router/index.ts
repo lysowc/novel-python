@@ -94,6 +94,12 @@ const router = createRouter({
           meta: { title: 'AI 日志' },
         },
         {
+          path: 'oplogs',
+          name: 'admin-oplogs',
+          component: () => import('@/views/admin/OpLogsView.vue'),
+          meta: { title: '操作记录' },
+        },
+        {
           path: 'settings',
           name: 'admin-settings',
           component: () => import('@/views/admin/SettingsView.vue'),

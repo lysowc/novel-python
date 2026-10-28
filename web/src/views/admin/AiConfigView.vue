@@ -13,6 +13,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import ModelRoutingCard from '@/components/admin/ModelRoutingCard.vue'
 import {
   createModel, createProvider, deleteModel, deleteProvider, fetchModels,
   fetchProviders, setModelDefault, setProviderDefault, updateModel, updateProvider,
@@ -222,6 +223,8 @@ onMounted(load)
     <LoadingState v-if="loading" variant="list" :rows="3" />
 
     <template v-else>
+      <ModelRoutingCard v-if="models.length > 1" :models="models" class="mb-8" />
+
       <!-- Providers -->
       <section class="mb-8">
         <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold">

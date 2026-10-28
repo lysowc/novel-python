@@ -7,6 +7,8 @@ export interface StreamHandlers {
   onDelta?: (content: string) => void
   /** 任务状态变化 */
   onStatus?: (status: string) => void
+  /** 服务端要求清空已显示的内容（例如质量检查不通过、正文重写） */
+  onReset?: () => void
   /** 流结束 */
   onDone?: (data?: unknown) => void
   /** 错误 */
@@ -30,6 +32,9 @@ function dispatch(evt: StreamEvent, handlers: StreamHandlers) {
       break
     case 'status':
       handlers.onStatus?.(String(evt.message ?? evt.status ?? evt.stage ?? ''))
+      break
+    case 'reset':
+      handlers.onReset?.()
       break
     case 'done':
       handlers.onDone?.(evt)

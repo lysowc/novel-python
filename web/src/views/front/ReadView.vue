@@ -5,8 +5,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft, ChevronLeft, ChevronRight, ListTree, Moon, Sun, Settings,
-  TextCursorInput, AlignCenter, AlignRight, BookOpen, LoaderCircle,
+  TextCursorInput, AlignCenter, AlignRight, BookOpen, LoaderCircle, Bookmark as BookmarkIcon, BookmarkPlus, X,
 } from '@lucide/vue'
+import { toast } from 'vue-sonner'
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger,
 } from '@/components/ui/sheet'
@@ -70,10 +71,57 @@ async function load(no: number) {
 
 async function restoreScroll() {
   await new Promise((r) => setTimeout(r, 40))
-  const saved = reader.getProgress(Number(novelId.value))
-  if (saved && saved.no === chapterNo.value && saved.scrollTop > 0 && contentRef.value) {
-    contentRef.value.scrollTop = saved.scrollTop
+  const el = contentRef.value
+  if (!el) return
+  // 从书签跳转：?at=比例（0~1），按比例定位，字号/宽度变了也大致准确
+  const at = Number(route.query.at)
+  if (route.query.at !== undefined && Number.isFinite(at)) {
+    el.scrollTop = Math.max(0, at) * Math.max(0, el.scrollHeight - el.clientHeight)
+    return
   }
+  const saved = reader.getProgress(Number(novelId.value))
+  if (saved && saved.no === chapterNo.value && saved.scrollTop > 0) {
+    el.scrollTop = saved.scrollTop
+  }
+}
+
+// ---- 书签 ----
+const novelBookmarks = computed(() => reader.bookmarksOf(Number(novelId.value)))
+
+/** 当前屏幕最上方那一段的开头，作为书签摘要 */
+function visibleExcerpt(): string {
+  const el = contentRef.value
+  if (!el) return ''
+  const top = el.getBoundingClientRect().top
+  const ps = Array.from(el.querySelectorAll('article .prose-novel p')) as HTMLElement[]
+  const first = ps.find((p) => p.getBoundingClientRect().bottom > top + 60) ?? ps[0]
+  return (first?.textContent || '').trim().slice(0, 60)
+}
+
+function addBookmark() {
+  const el = contentRef.value
+  if (!el || !chapter.value || !novel.value) return
+  const percent = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0
+  reader.addBookmark({
+    novelId: Number(novelId.value),
+    novelTitle: novel.value.title,
+    no: chapterNo.value,
+    chapterTitle: chapter.value.title,
+    percent,
+    scrollTop: el.scrollTop,
+    excerpt: visibleExcerpt(),
+  })
+  toast.success('已添加书签')
+}
+
+function openBookmark(no: number, percent: number) {
+  saveProgress()
+  if (no === chapterNo.value && contentRef.value) {
+    const el = contentRef.value
+    el.scrollTop = percent * Math.max(0, el.scrollHeight - el.clientHeight)
+    return
+  }
+  router.push({ path: `/read/${novelId.value}/${no}`, query: { at: percent.toFixed(4) } })
 }
 
 function onScroll() {
@@ -146,7 +194,7 @@ onBeforeUnmount(() => {
         <div class="flex items-center gap-0.5">
           <Sheet v-model:open="catalogOpen">
             <SheetTrigger as-child>
-              <Button variant="ghost" size="sm" class="gap-1.5 text-muted-foreground">
+              <Button variant="ghost" size="sm" class="gap-1.5 text-muted-foreground" aria-label="目录">
                 <ListTree class="size-4" />
                 <span class="hidden sm:inline">目录</span>
               </Button>
@@ -178,10 +226,51 @@ onBeforeUnmount(() => {
             </SheetContent>
           </Sheet>
 
+          <!-- 书签 -->
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="ghost" size="sm" class="gap-1.5 text-muted-foreground" aria-label="书签">
+                <BookmarkIcon class="size-4" />
+                <span class="hidden sm:inline">书签</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-72">
+              <DropdownMenuItem @select="addBookmark">
+                <BookmarkPlus class="size-4" /> 在当前位置加书签
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel class="text-xs text-muted-foreground">
+                本书书签（{{ novelBookmarks.length }}）
+              </DropdownMenuLabel>
+              <p v-if="!novelBookmarks.length" class="px-2 pb-2 text-xs text-muted-foreground">还没有书签</p>
+              <div class="max-h-72 overflow-y-auto">
+                <DropdownMenuItem
+                  v-for="b in novelBookmarks"
+                  :key="b.id"
+                  class="items-start gap-2"
+                  @select="openBookmark(b.no, b.percent)"
+                >
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-xs font-medium">第 {{ b.no }} 章 · {{ Math.round(b.percent * 100) }}%</p>
+                    <p class="line-clamp-2 text-[11px] text-muted-foreground">{{ b.excerpt || b.chapterTitle }}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    title="删除书签"
+                    @click.stop.prevent="reader.removeBookmark(b.id)"
+                  >
+                    <X class="size-3.5" />
+                  </button>
+                </DropdownMenuItem>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <!-- 阅读设置 -->
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
-              <Button variant="ghost" size="sm" class="gap-1.5 text-muted-foreground">
+              <Button variant="ghost" size="sm" class="gap-1.5 text-muted-foreground" aria-label="阅读设置">
                 <Settings class="size-4" />
                 <span class="hidden sm:inline">设置</span>
               </Button>

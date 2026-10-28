@@ -2,13 +2,15 @@
 import { Button } from '@/components/ui/button'
 
 import { computed, onMounted, ref } from 'vue'
-import { Braces, History, ListTree, Save, Sparkles } from '@lucide/vue'
+import { Braces, Flag, History, ListTree, Network, Save, Sparkles } from '@lucide/vue'
+import RelationGraph from '@/components/admin/RelationGraph.vue'
+import ForeshadowOverview from '@/components/admin/ForeshadowOverview.vue'
 import { Input } from '@/components/ui/input'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
-import { fetchNovelMemory, saveNovelMemory } from '@/api'
+import { fetchNovelMemory, fetchOutlineStatus, saveNovelMemory } from '@/api'
 import { usePollingTask } from '@/composables/useAiTask'
 import type { Memory, StructuredMemory } from '@/types/api'
 
@@ -19,7 +21,7 @@ const saving = ref(false)
 const content = ref('{}')
 const updatedAt = ref('')
 /** structured: 记忆槽卡片视图；raw: JSON 直接编辑 */
-const viewMode = ref<'structured' | 'raw'>('structured')
+const viewMode = ref<'structured' | 'graph' | 'foreshadow' | 'raw'>('structured')
 
 const { running, run } = usePollingTask()
 
@@ -85,6 +87,10 @@ async function aiUpdate() {
   })
 }
 
+// 当前写到第几章（伏笔一览的章节轴）
+const writtenMax = ref(0)
+fetchOutlineStatus(props.novelId).then((o) => (writtenMax.value = o.written_max)).catch(() => {})
+
 // 从第 N 章起重建记忆（重写中间章节后让后续记忆跟上；旧小说从第 1 章完整重建）
 const rebuildFrom = ref(1)
 const rebuildConfirm = ref(false)
@@ -127,6 +133,24 @@ onMounted(load)
             @click="viewMode = 'raw'"
           >
             <Braces class="size-3.5" /> JSON
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="gap-1.5 rounded-md"
+            :class="viewMode === 'graph' ? 'bg-foreground/10' : ''"
+            @click="viewMode = 'graph'"
+          >
+            <Network class="size-3.5" /> 关系图
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="gap-1.5 rounded-md"
+            :class="viewMode === 'foreshadow' ? 'bg-foreground/10' : ''"
+            @click="viewMode = 'foreshadow'"
+          >
+            <Flag class="size-3.5" /> 伏笔
           </Button>
         </div>
         <Button class="gap-2" :disabled="saving" @click="save">
@@ -290,6 +314,17 @@ onMounted(load)
         <p class="p-5 text-sm leading-relaxed">{{ structured.style_notes }}</p>
       </div>
     </div>
+
+    <RelationGraph
+      v-else-if="viewMode === 'graph' && structured"
+      :characters="structured.characters"
+      :archive="structured.character_archive"
+    />
+    <ForeshadowOverview
+      v-else-if="viewMode === 'foreshadow' && structured"
+      :items="structured.foreshadowing"
+      :current-chapter="writtenMax"
+    />
 
     <!-- JSON 编辑视图 -->
     <div v-else class="rounded-2xl border bg-card shadow-sm">

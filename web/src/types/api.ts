@@ -40,6 +40,8 @@ export interface Novel {
   category_name?: string
   created_at: string
   updated_at: string
+  /** 非空 = 在回收站里 */
+  deleted_at?: string | null
 }
 
 export interface NovelDetail extends Novel {
@@ -187,6 +189,7 @@ export type TaskType =
   | 'generate_summary'
   | 'update_memory'
   | 'rebuild_memory'
+  | 'extend_outline'
   | 'consistency_check'
 
 export interface AiTask {
@@ -334,6 +337,46 @@ export interface Dashboard {
   recent_logs: AiLog[]
   /** 需要管理员处理的安全配置提醒 */
   security_warnings?: string[]
+  /** 大纲快用完的小说 */
+  outline_warnings?: (OutlineStatus & { novel_id: number; title: string })[]
+}
+
+export interface OutlineStatus {
+  outline_max: number
+  written_max: number
+  remaining: number
+  threshold: number
+  warn: boolean
+  auto_extend_outline?: number
+}
+
+export interface NovelAutomation {
+  novel_id: number
+  schedule_enabled: number
+  schedule_time: string
+  chapters_per_run: number
+  target_words: number
+  last_run_date: string | null
+  last_run_message: string
+  auto_extend_outline: number
+  extend_chapters: number
+  timezone: string
+}
+
+export interface OperationLog {
+  id: number
+  admin_id: number
+  username: string
+  action: string
+  summary: string
+  method: string
+  path: string
+  target_type: string
+  target_id: number
+  success: number
+  message: string
+  ip: string
+  created_at: string
 }
 
 export interface HomeData {
@@ -347,7 +390,7 @@ export interface SystemConfig {
 }
 
 // SSE 事件
-export type StreamEventType = 'chunk' | 'delta' | 'status' | 'done' | 'error'
+export type StreamEventType = 'chunk' | 'delta' | 'status' | 'reset' | 'done' | 'error'
 
 export interface StreamEvent {
   type: StreamEventType

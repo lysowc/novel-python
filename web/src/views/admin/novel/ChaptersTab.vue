@@ -17,10 +17,11 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  cancelTask, createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchTasks, publishChapters, retryTask, updateChapter,
+  cancelTask, createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchOutlineStatus, fetchTasks,
+  publishChapters, retryTask, updateChapter,
 } from '@/api'
 import { countWords, formatNumber, formatRelative } from '@/lib/format'
-import type { AiTask, Chapter } from '@/types/api'
+import type { AiTask, Chapter, OutlineStatus } from '@/types/api'
 
 const props = defineProps<{ novelId: number }>()
 
@@ -138,6 +139,19 @@ function dismiss(id: number) {
   }
 }
 
+// 大纲余量提醒
+const outline = ref<OutlineStatus | null>(null)
+const extendOpen = ref(false)
+
+// 质量提醒：自动重写后仍有问题的章节
+const qualityTasks = computed(() =>
+  recentTasks.value.filter((t) => t.status === 'success' && t.params?.quality_warning && !dismissed.value.includes(t.id)),
+)
+function qualityChapterNo(t: AiTask): number | undefined {
+  const r = t.params?.resume as { chapter_no?: number } | undefined
+  return r?.chapter_no
+}
+
 const drafts = computed(() => chapters.value.filter((c) => c.status === 'draft'))
 const publishing = ref(false)
 async function publish(ids?: number[]) {
@@ -162,6 +176,7 @@ async function load() {
   try {
     chapters.value = await fetchAdminChapters(props.novelId)
     await loadRunningTask()
+    fetchOutlineStatus(props.novelId).then((o) => (outline.value = o)).catch(() => {})
   } finally {
     loading.value = false
   }
@@ -396,6 +411,48 @@ onBeforeUnmount(stopPolling)
       <Button size="sm" variant="ghost" class="text-destructive" :disabled="cancelling" @click="cancelRunning(false)">
         取消
       </Button>
+    </div>
+
+    <!-- 大纲快用完 -->
+    <div
+      v-if="outline?.warn"
+      class="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-foreground/30 px-4 py-2.5 text-sm"
+    >
+      <span class="min-w-0 flex-1">
+        大纲{{ outline.remaining > 0 ? `只剩 ${outline.remaining} 章` : '已经写完了' }}（规划到第 {{ outline.outline_max }} 章）。
+        <span class="text-muted-foreground">
+          {{ outline.auto_extend_outline ? '已开启自动续写大纲，写下一章前会自动补上。' : '可以续写大纲，或在「自动化」里开启自动续写。' }}
+        </span>
+      </span>
+      <Button size="sm" variant="outline" :disabled="!!runningTask" @click="extendOpen = true">续写大纲</Button>
+    </div>
+    <StreamDialog
+      v-if="extendOpen"
+      v-model:open="extendOpen"
+      title="续写大纲"
+      task-type="extend_outline"
+      :novel-id="novelId"
+      :params="{ chapters: 10 }"
+      mode="stream"
+      @done="() => { toast.success('大纲已续写'); load() }"
+    />
+
+    <!-- 质量提醒 -->
+    <div v-if="qualityTasks.length" class="mb-4 space-y-2 rounded-xl border border-dashed border-foreground/30 px-4 py-3">
+      <p class="text-sm font-medium">质量提醒：这些章节自动重写后仍有问题，建议看一下</p>
+      <div v-for="t in qualityTasks" :key="t.id" class="flex flex-wrap items-start gap-2 text-sm">
+        <p class="min-w-0 flex-1 text-muted-foreground">
+          <span class="text-foreground">{{ qualityChapterNo(t) ? `第 ${qualityChapterNo(t)} 章` : `任务 #${t.id}` }}</span>：{{ t.params?.quality_warning }}
+        </p>
+        <Button
+          v-if="qualityChapterNo(t)"
+          size="sm"
+          variant="outline"
+          :disabled="!!runningTask"
+          @click="startAi('regenerate_chapter', chapters.find((c) => c.chapter_no === qualityChapterNo(t)))"
+        >重新生成</Button>
+        <Button size="sm" variant="ghost" class="text-muted-foreground" @click="dismiss(t.id)">忽略</Button>
+      </div>
     </div>
 
     <!-- 失败任务（可重试） -->
