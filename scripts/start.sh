@@ -13,6 +13,8 @@ elif [ -x "$ROOT/.venv/bin/python" ]; then
 else
   PY="python3"
 fi
+# 日志实时写入（否则 Python 输出到文件时会攒一大块才写，看日志时总是旧的）
+export PYTHONUNBUFFERED=1
 PORT="${PORT:-8800}"
 MOCK_PORT="${MOCK_PORT:-8899}"
 LOG_DIR="${ROOT}/runtime"

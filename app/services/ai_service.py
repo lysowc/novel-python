@@ -332,7 +332,7 @@ class AiService:
             result = self.client.chat_stream(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 {"task_type": type_, "max_tokens": max_tokens},
-                on_delta,
+                on_delta, on_stage,
             )
             content = (result.get("text") or "").strip()
             if not enabled:

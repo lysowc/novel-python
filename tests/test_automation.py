@@ -257,3 +257,42 @@ def test_ai_client_stream_retries_without_stream_options(S, monkeypatch):
     _patch_http(monkeypatch, handler)
     result = ai_client.AiClient(S()).chat_stream([{"role": "user", "content": "u"}], {"task_type": "x"})
     assert result["text"] == "好" and seen == [True, False]
+
+
+# ---------- 思考型模型（推理过程占输出额度） ----------
+
+def test_output_limit_adds_reasoning_headroom_capped_by_model():
+    m = AiModel(name="m", max_tokens=None)
+    assert ai_client.output_limit(m, {"max_tokens": 6000}) == 6000 + ai_client.REASONING_HEADROOM
+    assert ai_client.output_limit(m, {}) == ai_client.DEFAULT_MAX_TOKENS
+    m.max_tokens = 8192
+    assert ai_client.output_limit(m, {"max_tokens": 6000}) == 8192, "不超过模型上限"
+    assert ai_client.output_limit(m, {"max_tokens": 6000, "_no_headroom": True}) == 6000
+
+
+def test_stream_reasoning_only_reports_clear_error_and_thinking_stage(S, monkeypatch):
+    add_model(S, "m", default=1)
+    chunks = _sse({"choices": [{"delta": {"content": None, "reasoning_content": "想一想"}}]},
+                  {"choices": [{"delta": {"content": None, "reasoning_content": "再想想"}, "finish_reason": "length"}]})
+    _patch_http(monkeypatch, lambda request: httpx.Response(200, stream=SlowStream(chunks)))
+    stages = []
+    with pytest.raises(RuntimeError, match="思考上"):
+        ai_client.AiClient(S()).chat_stream([{"role": "user", "content": "u"}], {"task_type": "continue_chapter"},
+                                            on_stage=lambda st, msg="": stages.append(st))
+    assert stages.count("thinking") == 1
+
+
+def test_chat_null_content_and_max_tokens_rejected_retry(S, monkeypatch):
+    add_model(S, "m", default=1)
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body["max_tokens"])
+        if body["max_tokens"] > 4096:
+            return httpx.Response(400, json={"error": {"message": "max_tokens is too large: must be <= 4096"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}, "finish_reason": "length"}]})
+    _patch_http(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="思考上"):
+        ai_client.AiClient(S()).chat([{"role": "user", "content": "u"}], {"task_type": "x", "max_tokens": 4000})
+    assert seen == [4000 + ai_client.REASONING_HEADROOM, 4000], "超限时去掉余量重试一次"
