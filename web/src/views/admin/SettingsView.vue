@@ -21,7 +21,7 @@ const groups: { title: string; fields: Field[] }[] = [
     title: '基础',
     fields: [
       { key: 'site_name', label: '站点名称', type: 'text', placeholder: '拾光小说', hint: '前台导航与页脚展示的站点名' },
-      { key: 'ai_temperature', label: 'AI 温度（写作）', type: 'number', placeholder: '1.5', hint: '写正文的随机性，0-2，越高越发散；DeepSeek 文档建议创作写作 1.5。「AI 配置」里给模型单独填了温度时以模型为准；开启思考时温度不生效', step: 0.1 },
+      { key: 'ai_temperature', label: 'AI 温度（写作）', type: 'number', placeholder: '1.0', hint: '写正文的随机性，0-2，越高越发散。DeepSeek 文档建议创作 1.5，但实测写几千字的长章节时 1.5 后半段会胡言乱语，建议 1.0 左右。「AI 配置」里给模型单独填了温度时以模型为准；开启思考时温度不生效', step: 0.1 },
       { key: 'ai_temperature_auxiliary', label: 'AI 温度（辅助任务）', type: 'number', placeholder: '1.0', hint: '摘要、记忆、审校、大纲校准用的温度；这些是整理/抽取类任务，DeepSeek 文档建议 1.0', step: 0.1 },
       { key: 'ai_http_timeout', label: 'AI HTTP 超时（秒）', type: 'number', placeholder: '120', hint: '调用模型接口的超时上限', step: 1 },
     ],
