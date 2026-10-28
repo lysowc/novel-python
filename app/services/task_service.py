@@ -104,15 +104,40 @@ def clear_novel_locks() -> int:
         r.close()
 
 
-def connect_redis() -> redis.Redis:
+def connect_redis(socket_timeout: float | None = 10) -> redis.Redis:
+    """socket_timeout：等待 Redis 回复的最长秒数。redis-py 8 默认只有 5 秒，
+    阻塞命令（BRPOP 等 30 秒）必须显式传更长的值，否则每次都会读超时。"""
     return redis.Redis(
         host=settings.redis_host,
         port=settings.redis_port,
         db=settings.redis_database,
         password=settings.redis_password or None,
         socket_connect_timeout=5,
+        socket_timeout=socket_timeout,
         decode_responses=True,
     )
+
+
+STALE_PENDING_SECONDS = 300
+
+
+def requeue_stale_pending(db: Session) -> int:
+    """兜底：排队超过 5 分钟、但已经不在 Redis 队列里的任务（例如 worker 取走后连接断开丢失），重新放回队列。
+    重复入队没关系：领取是原子的，同一任务只会执行一次。"""
+    from datetime import timedelta
+    cutoff = now() - timedelta(seconds=STALE_PENDING_SECONDS)
+    stale = db.query(AiTask.id).filter(AiTask.status == "pending", AiTask.updated_at < cutoff).all()
+    if not stale:
+        return 0
+    r = connect_redis()
+    try:
+        queued = set(r.lrange(QUEUE_KEY, 0, -1))
+        missing = [str(tid) for (tid,) in stale if str(tid) not in queued]
+        if missing:
+            r.lpush(QUEUE_KEY, *missing)
+        return len(missing)
+    finally:
+        r.close()
 
 
 def connect_redis_async():

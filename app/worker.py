@@ -8,6 +8,8 @@ import time
 
 from app.services.task_service import DEFER_DELAY, QUEUE_KEY, clear_novel_locks, connect_redis, execute
 
+BRPOP_TIMEOUT = 30
+
 
 def recover_stuck_tasks() -> None:
     """启动时恢复：把残留的 running 任务标记为 failed。
@@ -53,10 +55,11 @@ def main() -> None:
     while True:
         task_id = None
         try:
-            r = connect_redis()
+            # BRPOP 最多阻塞 30 秒：读超时要比它长，否则 redis-py 8 默认的 5 秒读超时会让每次等待都报错
+            r = connect_redis(socket_timeout=BRPOP_TIMEOUT + 15)
             try:
                 # 入队用 LPUSH，这里从右端取 → 先进先出（此前 BLPOP 是后进先出，任务多时最早的会一直排不到）
-                item = r.brpop(QUEUE_KEY, timeout=30)
+                item = r.brpop(QUEUE_KEY, timeout=BRPOP_TIMEOUT)
             finally:
                 r.close()
             if isinstance(item, (list, tuple)) and len(item) >= 2:

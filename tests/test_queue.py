@@ -227,3 +227,32 @@ def test_stop_chain_after_current(S, fake_ai):
     db = S()
     assert db.query(AiTask).filter_by(status="pending").count() == 0
     assert db.query(Chapter).count() == 1
+
+
+def test_worker_redis_read_timeout_longer_than_brpop():
+    """redis-py 8 默认读超时只有 5 秒，BRPOP 等 30 秒会每次读超时（线上 worker.log 刷屏）"""
+    import app.worker as worker
+    client = ts.connect_redis(socket_timeout=worker.BRPOP_TIMEOUT + 15)
+    assert client.connection_pool.connection_kwargs["socket_timeout"] > worker.BRPOP_TIMEOUT
+    assert ts.connect_redis().connection_pool.connection_kwargs["socket_timeout"] == 10
+
+
+def test_requeue_stale_pending(S):
+    from datetime import timedelta
+    from app.helpers import now
+    make_novel(S, 1)
+    db = S()
+    old = now() - timedelta(minutes=10)
+    lost = AiTask(task_type="generate_outline", ref_id=1, params={}, status="pending", error_message="",
+                  created_at=old, updated_at=old)
+    fresh = AiTask(task_type="generate_outline", ref_id=1, params={}, status="pending", error_message="",
+                   created_at=now(), updated_at=now())
+    queued = AiTask(task_type="generate_outline", ref_id=1, params={}, status="pending", error_message="",
+                    created_at=old, updated_at=old)
+    db.add_all([lost, fresh, queued])
+    db.commit()
+    r = ts.connect_redis()
+    r.lpush(ts.QUEUE_KEY, str(queued.id))
+    assert ts.requeue_stale_pending(db) == 1
+    assert sorted(r.lrange(ts.QUEUE_KEY, 0, -1)) == sorted([str(queued.id), str(lost.id)])
+    assert ts.requeue_stale_pending(db) == 0, "已在队列里的不重复放"

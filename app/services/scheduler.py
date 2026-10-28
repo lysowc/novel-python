@@ -71,6 +71,9 @@ def tick() -> None:
         try:
             for note in run_schedules(db, current):
                 print("[scheduler]", note)
+            requeued = task_service.requeue_stale_pending(db)
+            if requeued:
+                print(f"[scheduler] {requeued} 个排队过久且不在队列里的任务已重新入队")
             if r.set(f"ai:trash:purged:{current.date()}", "1", nx=True, ex=2 * 86400):
                 purged = novel_trash.purge_expired(db)
                 if purged:
