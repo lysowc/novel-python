@@ -37,6 +37,8 @@ CONFIG_KEYS = {
     "quality_min_ratio": "字数不足判定比例",
     "auto_rebuild_memory": "重写中间章节后自动重建后续记忆",
     "outline_warn_remaining": "大纲剩余几章时提醒/续写",
+    "arc_summary_size": "每多少章生成一段分段总结（0=关闭）",
+    "repetition_check_enabled": "检测与前文重复的桥段",
 }
 
 CONFIG_DEFAULTS = {
@@ -44,12 +46,13 @@ CONFIG_DEFAULTS = {
     "context_max_recent_chapters": "5", "context_summary_max_chars": "12000",
     "chapter_target_words": "3000", "outline_volumes": "3",
     "outline_chapters_per_volume": "20", "retrieval_enabled": "1",
-    "retrieval_max_chapters": "5", "consistency_auto_interval": "0",
+    "retrieval_max_chapters": "5", "consistency_auto_interval": "10",
     "chapter_auto_publish": "1", "context_max_chars": "60000",
     "model_writing_id": "0", "model_auxiliary_id": "0",
     "budget_daily": "0", "budget_novel_daily": "0", "trash_retention_days": "30",
     "quality_check_enabled": "1", "quality_min_ratio": "0.5",
     "auto_rebuild_memory": "1", "outline_warn_remaining": "3",
+    "arc_summary_size": "20", "repetition_check_enabled": "1",
 }
 
 

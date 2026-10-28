@@ -142,6 +142,56 @@ PROMPT_DEFAULTS = [
 }""",
     },
     {
+        "type": "memory_patch",
+        "name": "小说记忆增量更新",
+        "description": "只输出最新一章带来的变化（补丁），由程序合并进记忆、人物档案和名词表",
+        "content": """你负责维护一部长篇小说的资料库。请阅读【最新一章】，对照【旧记忆】【人物档案索引】【名词表】，只输出"这一章带来的变化"。
+
+规则：
+- 只写变化：旧记忆里没变的内容不要重复输出，程序会自动保留
+- current_state：本章结束时的地点、故事内时间（如"入门第三年深秋""次日清晨"，要能看出过了多久）、主线进展（1~3 句）
+- characters_upsert：本章出场且状态/关系/目标有变化的人物（近况，一句话）
+- characters_left：本章死亡、长期离开或退场的人物姓名
+- foreshadowing_add：本章新埋下的伏笔；foreshadowing_resolve：本章回收的伏笔（照抄旧记忆里那条伏笔的描述）
+- world_facts_add：新出现、会影响后续剧情的世界规则/地点/势力事实
+- timeline_add：本章关键事件（1~3 条）
+- unresolved_add / unresolved_resolve：新出现的待解决问题 / 本章已解决的问题（照抄旧记忆里的描述）
+- items_upsert：重要物品的获得、转手、损坏、用掉
+- profiles：人物档案（长期稳定的人设）。新登场的重要人物必须建档；已建档人物只在外貌/性格/能力/境界/身份/关系发生变化时输出变化的字段。
+  境界（realm）写当前完整境界名称，如"筑基中期"；没有变化不要输出
+- terms：本章首次出现的专有名词（地名、功法、法宝、势力、组织等），一句话说明；已在名词表中的不要重复
+- 用词与名词表、档案保持一致，同一事物不要换说法
+- 某项没有变化就输出空数组或省略
+
+严格只输出 JSON（不要输出任何其他文字或代码块标记）：
+{
+  "current_state": {"location": "", "time": "", "plot_progress": ""},
+  "characters_upsert": [{"name": "", "status": "", "relationships": "", "goals": ""}],
+  "characters_left": [""],
+  "foreshadowing_add": [""],
+  "foreshadowing_resolve": [""],
+  "world_facts_add": [""],
+  "timeline_add": [""],
+  "unresolved_add": [""],
+  "unresolved_resolve": [""],
+  "items_upsert": [{"name": "", "status": ""}],
+  "profiles": [{"name": "", "aliases": "", "role": "主角/配角/反派/路人", "appearance": "", "personality": "", "abilities": "", "realm": "", "relationships": "", "status": ""}],
+  "terms": [{"term": "", "type": "地点/功法/物品/势力/其他", "description": ""}]
+}""",
+    },
+    {
+        "type": "arc_summary",
+        "name": "分段总结",
+        "description": "把连续若干章的摘要压缩成一段前情提要，供后续章节回忆早期剧情",
+        "content": """你是一位小说编辑。下面是一部长篇小说中连续若干章的章节摘要，请把它们压缩成一段"前情提要"。
+
+要求：
+- 300~600 字，按时间顺序写清这一段的主线：起因、关键转折、结果
+- 必须保留：重要人物的登场与退场、人物关系变化、境界/身份变化、重要物品去向、埋下与回收的伏笔、仍未解决的问题
+- 用词与原摘要保持一致（人名、地名、功法名不要改写）
+- 直接输出正文，不要标题或解释""",
+    },
+    {
         "type": "consistency_check",
         "name": "一致性审校",
         "description": "对照大纲与已写章节检测漂移、矛盾、伏笔遗忘，产出结构化报告",
@@ -188,7 +238,8 @@ CONFIG_DEFAULTS = [
     ("outline_chapters_per_volume", "20", "大纲每卷章数"),
     ("retrieval_enabled", "1", "启用相关章节检索（生成时按相关性召回历史摘要，0=关闭）"),
     ("retrieval_max_chapters", "5", "每章生成时召回的相关历史章节数量"),
-    ("consistency_auto_interval", "0", "每 N 章自动运行一致性审校（0=关闭）"),
+    ("consistency_auto_interval", "10", "每 N 章自动运行一致性审校（0=关闭）"),
+    ("arc_summary_size", "20", "每 N 章生成一段分段总结（0=关闭）"),
 ]
 
 DEFAULT_CATEGORIES = ["玄幻", "仙侠", "都市", "科幻", "历史", "悬疑", "游戏"]

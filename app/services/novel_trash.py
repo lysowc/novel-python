@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.helpers import now
 from app.models import (
-    AiTask, Chapter, ConsistencyReport, Idea, Novel, NovelAutomation, NovelMemory, NovelSetting,
+    AiTask, ArcSummary, Chapter, CharacterProfile, ConsistencyReport, Idea, Novel, NovelAutomation, NovelMemory,
+    NovelSetting, StoryTerm,
 )
 from app.services import chapter_versions, memory_store
 from app.services.ai_client import config_value
@@ -28,6 +29,8 @@ def purge(db: Session, novel: Novel) -> None:
     db.query(NovelMemory).filter(NovelMemory.novel_id == nid).delete(synchronize_session=False)
     db.query(ConsistencyReport).filter(ConsistencyReport.novel_id == nid).delete(synchronize_session=False)
     db.query(NovelAutomation).filter(NovelAutomation.novel_id == nid).delete(synchronize_session=False)
+    for model in (CharacterProfile, StoryTerm, ArcSummary):
+        db.query(model).filter(model.novel_id == nid).delete(synchronize_session=False)
     memory_store.delete_snapshots(db, nid)
     chapter_versions.delete_versions(db, nid)
     db.query(AiTask).filter(AiTask.ref_id == nid, AiTask.ref_type == "novel").delete(synchronize_session=False)

@@ -32,10 +32,15 @@ def published_chapters(db: Session, novel: Novel, before_no: int | None = None):
     return q.order_by(Chapter.chapter_no.desc())
 
 
-def summaries_text(db: Session, novel: Novel, before_no: int | None = None, cap: int | None = None) -> str:
+def summaries_text(db: Session, novel: Novel, before_no: int | None = None, cap: int | None = None,
+                   after_no: int = 0) -> str:
+    """章节摘要（从近到远装满 cap 为止）；after_no：只取它之后的章节（更早的已由分段总结覆盖）"""
     if cap is None:
         cap = get_config_int(db, "context_summary_max_chars", 12000)
-    chapters = published_chapters(db, novel, before_no).all()
+    q = published_chapters(db, novel, before_no)
+    if after_no > 0:
+        q = q.filter(Chapter.chapter_no > after_no)
+    chapters = q.all()
     lines = []
     length = 0
     for chapter in chapters:
@@ -138,12 +143,30 @@ def build_chapter_context(
     recent_n = get_config_int(db, "context_max_recent_chapters", 5)
     summary_cap = get_config_int(db, "context_summary_max_chars", 12000)
 
+    # 长篇资料库：分段总结（早期剧情）、本章相关人物档案、名词表
+    from app.services import story_bible
+    arcs = story_bible.arcs_text(db, novel.id, chapter_no)
+    covered = story_bible.covered_until(db, novel.id, chapter_no) if arcs else 0
+    summary_after = max(0, min(covered, chapter_no - 11))  # 分段总结覆盖的部分不再重复带摘要，但最近 10 章始终保留
+    last = published_chapters(db, novel, chapter_no).first()
+    hint = fixed["outline"] + "\n" + fixed["instruction"] + "\n" + ((last.content or "")[-1500:] if last else "")
+    profile_rows = story_bible.relevant_profiles(db, novel, chapter_no, hint)
+    term_rows = story_bible.relevant_terms(db, novel, chapter_no, hint)
+    profile_n, term_n = len(profile_rows), len(term_rows)
+
     def assemble() -> str:
         sections = [
             ("【小说设定】", fixed["setting"]),
             ("【小说记忆（当前状态）】", fixed["memory"]),
-            ("【历史章节摘要】", summaries_text(db, novel, chapter_no, summary_cap)),
         ]
+        if profile_rows[:profile_n]:
+            sections.append(("【本章相关人物档案】（人设以此为准，不要写错外貌、性格、能力、境界）",
+                             story_bible.render_profiles(profile_rows[:profile_n], chapter_no)))
+        if term_rows[:term_n]:
+            sections.append(("【名词表】（专有名词按此写法）", story_bible.render_terms(term_rows[:term_n])))
+        if arcs:
+            sections.append(("【前情总览（分段总结）】", arcs))
+        sections.append(("【历史章节摘要】", summaries_text(db, novel, chapter_no, summary_cap, summary_after)))
         retrieved_text = render_retrieved(retrieved)
         if retrieved_text:
             sections.append(("【相关历史章节（检索召回）】", retrieved_text))
@@ -154,7 +177,7 @@ def build_chapter_context(
             parts.append("【用户附加要求】\n" + fixed["instruction"])
         return "\n\n".join(parts)
 
-    # 总长度预算：超出时依次压缩 最近正文（至少留 1 章）→ 召回章节 → 摘要窗口，设定/记忆/大纲不动
+    # 总长度预算：超出时依次压缩 最近正文（至少留 1 章）→ 召回章节 → 摘要窗口 → 名词表 → 人物档案，设定/记忆/大纲不动
     text = assemble()
     while budget > 0 and len(text) > budget:
         if recent_n > 1:
@@ -163,6 +186,10 @@ def build_chapter_context(
             retrieved.pop()
         elif summary_cap > 1000:
             summary_cap = max(1000, int(summary_cap * 0.6))
+        elif term_n > 5:
+            term_n = max(5, term_n // 2)
+        elif profile_n > 4:
+            profile_n -= 2
         else:
             break
         text = assemble()

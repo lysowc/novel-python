@@ -17,8 +17,11 @@ from app.models import (
 )
 from app.services import context_builder, memory as memory_service
 from app.services import chapter_versions, memory_store, prompt_service, quality, retrieval, task_service
+from app.services import story_bible
 from app.services.ai_client import CallbackAbort
 from app.services.ai_client import AiClient, config_value
+
+MEMORY_CHAPTER_CHARS = 12000  # 更新记忆时最多给 AI 看的正文字数（超出时保留开头和结尾）
 
 
 def parse_sections(text: str) -> dict:
@@ -230,7 +233,7 @@ class AiService:
         self.db.commit()
         self._recount(novel)
 
-        self._finish_chapter(novel, chapter, mem_base, on_stage)
+        self._finish_chapter(novel, chapter, mem_base, on_stage, task)
         return chapter
 
     def _resume_chapter(self, novel: Novel, task, resume: dict, on_stage=None) -> Chapter:
@@ -252,7 +255,7 @@ class AiService:
             mem_base = memory_store.MemoryBase(memory_store.current_content(self.db, novel.id), memory_store.CURRENT)
         else:
             mem_base = memory_store.memory_before(self.db, novel, chapter_no)
-        self._finish_chapter(novel, chapter, mem_base, on_stage)
+        self._finish_chapter(novel, chapter, mem_base, on_stage, task)
         return chapter
 
     def _retry_once(self, fn):
@@ -267,7 +270,7 @@ class AiService:
                 raise
             return fn()
 
-    def _finish_chapter(self, novel: Novel, chapter: Chapter, mem_base, on_stage=None) -> None:
+    def _finish_chapter(self, novel: Novel, chapter: Chapter, mem_base, on_stage=None, task=None) -> None:
         """章节正文保存后的步骤：摘要 → 记忆 → 自动审校"""
         chapter_no = int(chapter.chapter_no)
         mem_text = mem_base.context_text()
@@ -282,6 +285,26 @@ class AiService:
             except Exception as e:
                 raise RuntimeError(f"第{chapter_no}章已保存，但摘要生成失败（可重试补做）：{e}") from e
 
+        # 4.1 与前文重复的桥段（换了名字又写一遍）：只提示，不拦截
+        if int(float(config_value(self.db, "repetition_check_enabled", 1))) > 0:
+            hits = story_bible.repetition_check(self.db, novel.id, chapter_no, chapter.summary or "")
+            if hits:
+                msg = "本章情节与" + "、".join(f"第{n}章（相似度{int(sc * 100)}%）" for n, sc in hits) + "相似，注意是否重复套路"
+                if task is not None:
+                    task.params = {**(task.params or {}), "repetition_warning": msg}
+                    self.db.commit()
+                on_stage and on_stage("repetition_warning", msg)
+
+        has_later = self.db.query(Chapter.id).filter(
+            Chapter.novel_id == novel.id, Chapter.chapter_no > chapter_no).first() is not None
+        auto_rebuild = int(float(config_value(self.db, "auto_rebuild_memory", 1))) > 0
+        # 重写已有章节：旧版本本章（以及要重算的后续章节）留下的人物档案、名词、境界变化先撤回
+        if memory_store.get_snapshot(self.db, novel.id, chapter_no) and (not has_later or auto_rebuild):
+            story_bible.reset_from(self.db, novel.id, chapter_no)
+            self.db.commit()
+        story_bible.invalidate_arc(self.db, novel.id, chapter_no)
+        self.db.commit()
+
         # 5. 更新小说记忆
         on_stage and on_stage("memory", "正在更新小说记忆...")
         try:
@@ -290,9 +313,6 @@ class AiService:
             raise RuntimeError(f"第{chapter_no}章已保存，但记忆更新失败（可重试补做）：{e}") from e
 
         # 5.1 重写的是中间章节：后续章节的记忆都建立在旧版本上，按设置自动逐章重建
-        has_later = self.db.query(Chapter.id).filter(
-            Chapter.novel_id == novel.id, Chapter.chapter_no > chapter_no).first() is not None
-        auto_rebuild = int(float(config_value(self.db, "auto_rebuild_memory", 1))) > 0
         if has_later and auto_rebuild:
             on_stage and on_stage("memory_done", f"第{chapter_no}章记忆已更新，开始重建后续章节的记忆...")
             try:
@@ -304,8 +324,11 @@ class AiService:
         else:
             on_stage and on_stage("memory_done", "小说记忆已更新" + (f"（{warning}）" if warning else ""))
 
+        # 5.2 分段总结：写满一段（默认 20 章）就压缩成一段前情提要；失败不影响本章
+        self.fill_arc_summaries(novel, on_stage)
+
         # 6. 自动一致性审校（每 N 章）
-        interval = int(float(config_value(self.db, "consistency_auto_interval", 0)))
+        interval = int(float(config_value(self.db, "consistency_auto_interval", 10)))
         if interval > 0 and chapter_no % interval == 0:
             try:
                 task_service.enqueue(self.db, "consistency_check", novel.id, {"chapter_no": chapter_no})
@@ -487,31 +510,46 @@ class AiService:
             else "（暂无旧记忆，这是第一次建立记忆）"
         )
 
+        no = int(chapter.chapter_no)
         chapter_content = chapter.content or ""
-        if len(chapter_content) > 6000:
-            chapter_content = chapter_content[:6000] + "\n……（正文截断）"
+        if len(chapter_content) > MEMORY_CHAPTER_CHARS:
+            # 保留开头和结尾：结尾决定"本章结束时"的状态，比中间更重要
+            head = MEMORY_CHAPTER_CHARS * 2 // 3
+            chapter_content = chapter_content[:head] + "\n……（中间省略）……\n" \
+                + chapter_content[-(MEMORY_CHAPTER_CHARS - head):]
 
-        system = prompt_service.render(self.db, "memory_update")
+        system = prompt_service.render(self.db, "memory_patch")
         user = (
             f"【旧记忆】\n{old_text}\n\n"
-            f"【最新一章】\n第{chapter.chapter_no}章 {chapter.title}\n"
+            f"【人物档案索引】\n{story_bible.profile_brief(self.db, novel.id)}\n\n"
+            f"【名词表】\n{story_bible.term_brief(self.db, novel.id)}\n\n"
+            f"【最新一章】\n第{no}章 {chapter.title}\n"
             f"本章摘要：{chapter.summary}\n\n"
             f"本章正文：\n{chapter_content}"
         )
         result = self.client.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
-            {"task_type": "update_memory"},
+            {"task_type": "update_memory", "max_tokens": 6144},
         )
         data = extract_json(result["text"])
         if not data:
             raise RuntimeError("记忆更新失败：AI 未返回合法 JSON")
-        data = memory_service.normalize_memory(data)
-        # 增量合并：AI 漏掉的未回收伏笔、物品、世界观事实补回，删掉的人物移入名册
-        data, restored = memory_service.merge_memory(base.content, data)
+        if memory_service.is_patch(data):
+            # 增量补丁：旧记忆里没提到的内容原样保留
+            patch = data
+            data, notes = memory_service.apply_patch(base.content, patch, no)
+            notes += story_bible.upsert_profiles(self.db, novel.id, no, patch.get("profiles"))
+            notes += story_bible.upsert_terms(self.db, novel.id, no, patch.get("terms"))
+            restored = []
+            if notes:
+                print(f"[memory] 第{no}章资料库：" + "；".join(notes[:8]))
+        else:
+            # 兼容：AI（或作者改过的旧 prompt）返回了整份记忆 → 规整后与旧记忆合并兜底
+            data = memory_service.normalize_memory(data)
+            data, restored = memory_service.merge_memory(base.content, data)
         new_content = json.dumps(data, ensure_ascii=False, indent=2)
 
-        no = int(chapter.chapter_no)
         # 旧数据还没有快照：写新章节时把"开始前"的最新记忆补存为上一章快照，以后重写本章就有基准了
         if base.source == memory_store.CURRENT and no > 1 \
                 and not memory_store.get_snapshot(self.db, novel.id, no - 1) and (base.content or "").strip():
@@ -560,6 +598,10 @@ class AiService:
         base = memory_store.MemoryBase(snap.content or "", memory_store.SNAPSHOT, snap.chapter_no) if snap \
             else memory_store.MemoryBase("", memory_store.EMPTY)
 
+        # AI 在这些章节建的档案/名词、记下的境界变化先撤回，重算时重新提取（作者锁定的不动）
+        story_bible.reset_from(self.db, novel.id, first_no)
+        self.db.commit()
+
         total = len(chapters)
         for idx, chapter in enumerate(chapters, 1):
             on_stage and on_stage("rebuild", f"正在重算第{chapter.chapter_no}章的记忆（{idx}/{total}）...")
@@ -567,6 +609,50 @@ class AiService:
             row = memory_store.get_snapshot(self.db, novel.id, chapter.chapter_no)
             base = memory_store.MemoryBase(row.content or "", memory_store.SNAPSHOT, chapter.chapter_no)
         on_stage and on_stage("done", f"记忆重建完成：第{first_no}章至第{chapters[-1].chapter_no}章，共 {total} 章")
+
+    # ============ 分段总结 ============
+
+    def generate_arc_summary(self, novel: Novel, start_no: int, end_no: int) -> str:
+        written_max = int(self.db.query(func.max(Chapter.chapter_no)).filter(
+            Chapter.novel_id == novel.id, Chapter.status.in_(CHAPTER_WRITTEN_STATUSES)).scalar() or 0)
+        if written_max < end_no:
+            raise RuntimeError(f"第{start_no}-{end_no}章这一段还没写完（已写到第{written_max}章）")
+        source = story_bible.arc_source_text(self.db, novel.id, start_no, end_no)
+        if not source.strip():
+            raise RuntimeError(f"第{start_no}-{end_no}章没有内容")
+        earlier = story_bible.arcs_text(self.db, novel.id, start_no)
+        user = (("【更早的前情】\n" + earlier[-3000:] + "\n\n") if earlier else "") \
+            + f"【第{start_no}-{end_no}章摘要】\n{source}"
+        result = self.client.chat(
+            [{"role": "system", "content": prompt_service.render(self.db, "arc_summary")},
+             {"role": "user", "content": user}],
+            {"task_type": "arc_summary", "max_tokens": 2048},
+        )
+        text = (result.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("AI 返回内容为空")
+        story_bible.save_arc(self.db, novel.id, start_no, end_no, text)
+        self.db.commit()
+        return text
+
+    def fill_arc_summaries(self, novel: Novel, on_stage=None, raise_errors: bool = False) -> int:
+        """补齐所有已写满但还没有（或已作废）的分段总结，返回生成的段数"""
+        done = 0
+        for start_no, end_no in story_bible.missing_arcs(self.db, novel.id):
+            on_stage and on_stage("arc", f"正在生成第{start_no}-{end_no}章的分段总结...")
+            try:
+                self._retry_once(lambda a=start_no, b=end_no: self.generate_arc_summary(novel, a, b))
+                done += 1
+            except CallbackAbort:
+                raise
+            except Exception as e:
+                if raise_errors:
+                    raise
+                on_stage and on_stage("arc_failed", f"第{start_no}-{end_no}章分段总结生成失败（不影响正文，可在资料库重试）：{e}")
+                break
+        if done:
+            on_stage and on_stage("arc_done", f"已生成 {done} 段分段总结")
+        return done
 
     # ============ 一致性审校 ============
 
@@ -586,6 +672,26 @@ class AiService:
             "【小说大纲】\n" + context_builder.outline_text(novel)
             + "\n\n【已写章节进度】\n" + context_builder.written_progress_text(self.db, novel)
             + "\n\n【小说记忆（当前状态）】\n" + context_builder.memory_text(novel)
+        )
+        # 资料库：人物档案（人设、境界变化）、名词表、分段总结 —— 用来查人设漂移、境界倒退、名词写法不一
+        profile_rows = sorted(story_bible.profiles(self.db, novel.id), key=lambda r: r.last_chapter or 0, reverse=True)[:40]
+        if profile_rows:
+            lines = []
+            for p in profile_rows:
+                history = "→".join(f"{h.get('realm')}(第{h.get('chapter')}章)" for h in (p.realm_history or [])
+                                   if isinstance(h, dict))
+                lines.append(story_bible.render_profiles([p]) + (f"\n  境界变化：{history}" if history else ""))
+            user += "\n\n【人物档案】\n" + "\n".join(lines)
+        term_rows = story_bible.terms(self.db, novel.id)
+        if term_rows:
+            user += "\n\n【名词表】\n" + story_bible.render_terms(term_rows[-80:])
+        arcs = story_bible.arcs_text(self.db, novel.id)
+        if arcs:
+            user += "\n\n【前情总览（分段总结）】\n" + arcs[-6000:]
+        user += (
+            "\n\n另外请检查：人物言行是否违背【人物档案】中的性格设定、境界是否无故倒退或跳级、"
+            "专有名词是否出现不同写法、近期章节是否反复使用同一种桥段套路（如同样的冲突-打脸-突破模式连续出现），"
+            "套路重复请用 type=other 并在 description 中写明\u201c重复套路\u201d。"
         )
         # 抽查最近几章正文：只看摘要发现不了"断了的手又能拔剑"这类正文层面的矛盾
         sample = context_builder.recent_text_sample(self.db, novel)

@@ -92,7 +92,8 @@ def default_target(db: Session) -> tuple[AiProvider, AiModel] | None:
 
 
 # 辅助类调用（摘要、记忆、审校、质量检查）可以走更便宜的模型；其余（正文、设定、大纲、点子聊天）走写作模型
-AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "consistency_check", "quality_check"}
+AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "consistency_check", "quality_check",
+                        "arc_summary"}
 
 
 def resolve_target(db: Session, task_type: str = "") -> tuple[AiProvider, AiModel] | None:

@@ -11,7 +11,7 @@ from app.auth import AuthError, require_admin
 from app.config import PROJECT_ROOT, settings
 from app.services.audit import AuditMiddleware
 from app.services.security import config_warnings
-from app.routers import admin, ai_tasks, export, front, stats, versions
+from app.routers import admin, ai_tasks, bible, export, front, stats, versions
 
 app = FastAPI(title="AI 小说工坊", docs_url=None, redoc_url=None)
 
@@ -54,6 +54,7 @@ app.include_router(ai_tasks.router, dependencies=[Depends(require_admin)])
 app.include_router(versions.router, dependencies=[Depends(require_admin)])
 app.include_router(stats.router, dependencies=[Depends(require_admin)])
 app.include_router(export.router, dependencies=[Depends(require_admin)])
+app.include_router(bible.router, dependencies=[Depends(require_admin)])
 
 # ============ SPA 静态资源与兜底 ============
 

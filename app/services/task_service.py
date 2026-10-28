@@ -29,6 +29,7 @@ TYPES = [
     "consistency_check",
     "rebuild_memory",
     "extend_outline",
+    "arc_summary",
 ]
 
 
@@ -476,6 +477,20 @@ def execute(task_id: int) -> bool:
                     ai.extend_outline(novel, int((task.params or {}).get("chapters") or 10), on_stage)
                 elif task.task_type == "consistency_check":
                     ai.check_consistency(novel, task, on_stage)
+                elif task.task_type == "arc_summary":
+                    # 指定 chapter_no：重新生成它所在的那一段；不指定：补齐所有缺失的分段
+                    target_no = int((task.params or {}).get("chapter_no") or 0)
+                    if target_no:
+                        from app.services import story_bible
+                        size = story_bible.arc_size(db)
+                        if size <= 0:
+                            raise RuntimeError("分段总结已关闭（系统设置 arc_summary_size=0）")
+                        start = story_bible.arc_start(target_no, size)
+                        ai.generate_arc_summary(novel, start, start + size - 1)
+                        on_stage("done", f"第{start}-{start + size - 1}章分段总结已重新生成")
+                    else:
+                        n = ai.fill_arc_summaries(novel, on_stage, raise_errors=True)
+                        on_stage("done", f"已补齐 {n} 段分段总结" if n else "没有需要补齐的分段总结")
                 else:
                     raise RuntimeError("未知任务类型: " + task.task_type)
 

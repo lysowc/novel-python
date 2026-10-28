@@ -17,6 +17,17 @@ SLOTS = [
 
 ARCHIVE_LIMIT = 200      # 已登场人物名册上限
 WORLD_FACTS_LIMIT = 100  # 世界观事实上限
+ACTIVE_CHAR_LIMIT = 25   # 「人物状态」里的近期活跃人物上限（超出的按最久未出场移入名册）
+TIMELINE_LIMIT = 40      # 时间线只留最近的（更早的剧情由分段总结覆盖）
+UNRESOLVED_LIMIT = 40
+FORESHADOW_LIMIT = 80
+
+
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def parse_memory(content: str | None) -> dict:
@@ -83,8 +94,8 @@ def _render_slot(slot: str, value) -> str:
             if not desc:
                 continue
             status = str(f.get("status", "open"))
-            planted = int(f.get("planted_chapter") or 0)
-            resolved = int(f.get("resolved_chapter") or 0)
+            planted = _int(f.get("planted_chapter"))
+            resolved = _int(f.get("resolved_chapter"))
             suffix = (
                 f"（已回收，第{resolved}章）" if status == "resolved"
                 else (f"（约第{planted}章埋下）" if planted > 0 else "")
@@ -105,7 +116,7 @@ def _render_slot(slot: str, value) -> str:
         for event in value if isinstance(value, list) else []:
             if not isinstance(event, dict):
                 continue
-            chapter = int(event.get("chapter") or 0)
+            chapter = _int(event.get("chapter"))
             desc = str(event.get("event", "")).strip()
             if not desc:
                 continue
@@ -178,13 +189,14 @@ def normalize_memory(data: dict) -> dict:
     chars = []
     for c in raw_chars if isinstance(raw_chars, list) else []:
         if isinstance(c, str):
-            chars.append({"name": c.strip(), "status": "", "relationships": "", "goals": ""})
+            chars.append({"name": c.strip(), "status": "", "relationships": "", "goals": "", "last_chapter": 0})
         elif isinstance(c, dict):
             chars.append({
                 "name": str(c.get("name", "")).strip(),
                 "status": str(c.get("status", "")).strip(),
                 "relationships": str(c.get("relationships", "")).strip(),
                 "goals": str(c.get("goals", "")).strip(),
+                "last_chapter": _int(c.get("last_chapter")),
             })
     out["characters"] = [c for c in chars if c["name"]]
 
@@ -196,9 +208,9 @@ def normalize_memory(data: dict) -> dict:
             status = str(f.get("status", "open"))
             fores.append({
                 "description": str(f.get("description") or f.get("name") or "").strip(),
-                "planted_chapter": int(f.get("planted_chapter") or 0),
+                "planted_chapter": _int(f.get("planted_chapter")),
                 "status": status if status in ("open", "resolved") else "open",
-                "resolved_chapter": int(f.get("resolved_chapter") or 0),
+                "resolved_chapter": _int(f.get("resolved_chapter")),
             })
     out["foreshadowing"] = [f for f in fores if f["description"]]
 
@@ -221,7 +233,7 @@ def normalize_memory(data: dict) -> dict:
             timeline.append({"chapter": 0, "event": event.strip()})
         elif isinstance(event, dict):
             timeline.append({
-                "chapter": int(event.get("chapter") or 0),
+                "chapter": _int(event.get("chapter")),
                 "event": str(event.get("event", "")).strip(),
             })
     out["timeline"] = [e for e in timeline if e["event"]]
@@ -323,3 +335,165 @@ def merge_memory(old_content: str | None, new: dict) -> tuple[dict, list[str]]:
     out["character_archive"] = list(archive.values())[-ARCHIVE_LIMIT:]
 
     return out, restored
+
+
+# ---------- 增量补丁：AI 只输出"本章带来的变化"，不再整份重写 ----------
+
+PATCH_KEYS = (
+    "current_state", "characters_upsert", "characters_left", "foreshadowing_add", "foreshadowing_resolve",
+    "world_facts_add", "timeline_add", "unresolved_add", "unresolved_resolve", "items_upsert",
+    "style_notes", "profiles", "terms",
+)
+
+
+def is_patch(data: dict) -> bool:
+    """AI 返回的是补丁格式（而不是整份记忆）"""
+    return isinstance(data, dict) and any(k in data for k in PATCH_KEYS if k != "current_state") \
+        and data.get("schema") != SCHEMA_V2
+
+
+def _str_list(value) -> list[str]:
+    out = []
+    for item in value if isinstance(value, list) else ([value] if isinstance(value, str) else []):
+        if isinstance(item, dict):
+            item = item.get("description") or item.get("name") or item.get("event") or ""
+        item = str(item).strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def _best_match(text: str, candidates: list[str], threshold: float = 0.5) -> int:
+    """在 candidates 中找与 text 最相近的一条（包含关系或二元组重叠），返回下标；没有返回 -1"""
+    best, best_score = -1, 0.0
+    t = "".join(text.split())
+    x = _bigrams(text)
+    for i, c in enumerate(candidates):
+        cc = "".join(c.split())
+        if t and (t in cc or cc in t):
+            return i
+        y = _bigrams(c)
+        if not x or not y:
+            continue
+        score = len(x & y) / min(len(x), len(y))
+        if score >= threshold and score > best_score:
+            best, best_score = i, score
+    return best
+
+
+def apply_patch(old_content: str | None, patch: dict, chapter_no: int) -> tuple[dict, list[str]]:
+    """把第 chapter_no 章的记忆补丁应用到旧记忆上，返回 (新记忆, 变更说明)。
+
+    旧记忆里没被补丁提到的内容原样保留——不会再出现"AI 重写时顺手丢掉伏笔"的问题。
+    """
+    old = parse_memory(old_content)
+    base = normalize_memory(old if old.get("schema") == SCHEMA_V2 else {})
+    out = json.loads(json.dumps(base, ensure_ascii=False))
+    notes: list[str] = []
+
+    # 当前状态：给了哪个字段就更新哪个
+    cs = patch.get("current_state") if isinstance(patch.get("current_state"), dict) else {}
+    for k in ("location", "time", "plot_progress"):
+        v = str(cs.get(k) or "").strip()
+        if v:
+            out["current_state"][k] = v
+    story_time = str(patch.get("story_time") or "").strip()
+    if story_time:
+        out["current_state"]["time"] = story_time
+
+    # 人物：按姓名更新/新增；离场的移入名册
+    chars = out["characters"]
+    by_name = {c["name"]: c for c in chars}
+    for c in patch.get("characters_upsert") or []:
+        if isinstance(c, str):
+            c = {"name": c}
+        if not isinstance(c, dict) or not str(c.get("name", "")).strip():
+            continue
+        name = str(c["name"]).strip()
+        row = by_name.get(name)
+        if row is None:
+            row = {"name": name, "status": "", "relationships": "", "goals": "", "last_chapter": chapter_no}
+            chars.append(row)
+            by_name[name] = row
+            notes.append("新人物：" + name)
+        for k in ("status", "relationships", "goals"):
+            v = str(c.get(k) or "").strip()
+            if v:
+                row[k] = v
+        row["last_chapter"] = chapter_no
+    archive = {a["name"]: a for a in out.get("character_archive", [])}
+    for name in archive.keys() & by_name.keys():  # 重新登场的移出名册
+        archive.pop(name, None)
+    left = set(_str_list(patch.get("characters_left")))
+    for name in left:
+        row = by_name.pop(name, None)
+        if row:
+            archive[name] = {"name": name, "status": row.get("status", "")}
+    active = [c for c in chars if c["name"] in by_name]
+    if len(active) > ACTIVE_CHAR_LIMIT:
+        active.sort(key=lambda c: c.get("last_chapter") or 0, reverse=True)
+        for c in active[ACTIVE_CHAR_LIMIT:]:
+            archive[c["name"]] = {"name": c["name"], "status": c.get("status", "")}
+        keep = {c["name"] for c in active[:ACTIVE_CHAR_LIMIT]}
+        active = [c for c in chars if c["name"] in keep]
+    out["characters"] = active
+    out["character_archive"] = list(archive.values())[-ARCHIVE_LIMIT:]
+
+    # 伏笔：新增 / 回收（模糊匹配描述）
+    fores = out["foreshadowing"]
+    for desc in _str_list(patch.get("foreshadowing_resolve")):
+        open_list = [f for f in fores if f["status"] == "open"]
+        i = _best_match(desc, [f["description"] for f in open_list])
+        if i >= 0:
+            open_list[i]["status"] = "resolved"
+            open_list[i]["resolved_chapter"] = chapter_no
+            notes.append("回收伏笔：" + open_list[i]["description"][:30])
+    for desc in _str_list(patch.get("foreshadowing_add")):
+        if _best_match(desc, [f["description"] for f in fores if f["status"] == "open"], 0.7) < 0:
+            fores.append({"description": desc, "planted_chapter": chapter_no, "status": "open", "resolved_chapter": 0})
+            notes.append("新伏笔：" + desc[:30])
+    # 已回收的伏笔只留最近 20 条（够提醒"别再回收一次"），未回收的全留，总数封顶
+    resolved = [f for f in fores if f["status"] == "resolved"][-20:]
+    opened = [f for f in fores if f["status"] == "open"]
+    out["foreshadowing"] = (opened + resolved)[-FORESHADOW_LIMIT:] if len(opened) < FORESHADOW_LIMIT else opened
+
+    for fact in _str_list(patch.get("world_facts_add")):
+        if not any(_similar(fact, n) for n in out["world_facts"]):
+            out["world_facts"].append(fact)
+    out["world_facts"] = out["world_facts"][-WORLD_FACTS_LIMIT:]
+
+    for event in patch.get("timeline_add") or []:
+        desc = str(event.get("event") if isinstance(event, dict) else event or "").strip()
+        if desc:
+            out["timeline"].append({"chapter": chapter_no, "event": desc})
+    out["timeline"] = out["timeline"][-TIMELINE_LIMIT:]
+
+    unresolved = out["unresolved_events"]
+    for desc in _str_list(patch.get("unresolved_resolve")):
+        i = _best_match(desc, unresolved)
+        if i >= 0:
+            unresolved.pop(i)
+    for desc in _str_list(patch.get("unresolved_add")):
+        if _best_match(desc, unresolved, 0.7) < 0:
+            unresolved.append(desc)
+    out["unresolved_events"] = unresolved[-UNRESOLVED_LIMIT:]
+
+    items = {i["name"]: i for i in out["important_items"]}
+    for item in patch.get("items_upsert") or []:
+        if isinstance(item, str):
+            item = {"name": item}
+        if isinstance(item, dict) and str(item.get("name", "")).strip():
+            name = str(item["name"]).strip()
+            status = str(item.get("status") or "").strip()
+            if name in items:
+                if status:
+                    items[name]["status"] = status
+            else:
+                items[name] = {"name": name, "status": status}
+    out["important_items"] = list(items.values())
+
+    style = patch.get("style_notes")
+    if isinstance(style, str) and style.strip():
+        out["style_notes"] = style.strip()
+
+    return out, notes

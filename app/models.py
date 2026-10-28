@@ -1,7 +1,7 @@
 """全部数据库模型（与 PHP 版表结构一一对应，共用同一 MySQL 库）"""
 
 from sqlalchemy import (
-    BigInteger, Column, Date, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text,
+    BigInteger, Column, Date, DateTime, Integer, JSON, Numeric, SmallInteger, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -264,6 +264,7 @@ class AiTask(Base):
         "consistency_check": "一致性审校",
         "rebuild_memory": "重建记忆",
         "extend_outline": "续写大纲",
+        "arc_summary": "分段总结",
     }
 
     @property
@@ -339,4 +340,59 @@ class NovelAutomation(Base):
     last_run_message = Column(String(255), nullable=False, default="")
     auto_extend_outline = Column(SmallInteger, nullable=False, default=0)
     extend_chapters = Column(Integer, nullable=False, default=10)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class CharacterProfile(Base):
+    """人物档案：长期稳定的人设（外貌、性格、能力、境界、关系），按需带入生成上下文"""
+    __tablename__ = "character_profile"
+    __table_args__ = (UniqueConstraint("novel_id", "name", name="uniq_novel_name"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    name = Column(String(64), nullable=False)
+    aliases = Column(String(255), nullable=False, default="")  # 逗号分隔：外号、称呼
+    role = Column(String(32), nullable=False, default="")
+    appearance = Column(Text, nullable=True)
+    personality = Column(Text, nullable=True)
+    abilities = Column(Text, nullable=True)
+    realm = Column(String(128), nullable=False, default="")  # 境界 / 实力等级
+    realm_history = Column(JSON, nullable=True)  # [{"chapter": 12, "realm": "筑基初期"}]
+    relationships = Column(Text, nullable=True)
+    status = Column(String(255), nullable=False, default="")
+    notes = Column(Text, nullable=True)
+    first_chapter = Column(Integer, nullable=False, default=0)
+    last_chapter = Column(Integer, nullable=False, default=0)
+    locked = Column(SmallInteger, nullable=False, default=0)  # 1 = 作者手动维护，AI 不改
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    def names(self) -> list[str]:
+        return [self.name] + [a.strip() for a in (self.aliases or "").replace("，", ",").split(",") if a.strip()]
+
+
+class StoryTerm(Base):
+    """名词表：地名、功法、物品、势力等专有名词的统一说法"""
+    __tablename__ = "story_term"
+    __table_args__ = (UniqueConstraint("novel_id", "term", name="uniq_novel_term"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    term = Column(String(64), nullable=False)
+    type = Column(String(32), nullable=False, default="")
+    description = Column(Text, nullable=True)
+    first_chapter = Column(Integer, nullable=False, default=0)
+    locked = Column(SmallInteger, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class ArcSummary(Base):
+    """分段总结：每 N 章一段的前情提要，替代早已滚出摘要窗口的旧剧情"""
+    __tablename__ = "arc_summary"
+    __table_args__ = (UniqueConstraint("novel_id", "start_no", name="uniq_novel_start"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    start_no = Column(Integer, nullable=False)
+    end_no = Column(Integer, nullable=False)
+    content = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)

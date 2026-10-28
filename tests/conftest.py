@@ -46,6 +46,9 @@ def S(tmp_path, monkeypatch):
     from app.models import SystemConfig
     db = dbm.SessionLocal()
     db.add(SystemConfig(key="quality_check_enabled", value="0"))
+    # 自动审校 / 重复检测有专门的测试；默认关掉，避免假 AI 的固定摘要触发提示、多出审校任务
+    db.add(SystemConfig(key="consistency_auto_interval", value="0"))
+    db.add(SystemConfig(key="repetition_check_enabled", value="0"))
     db.commit()
     db.close()
     yield dbm.SessionLocal
@@ -66,6 +69,9 @@ class FakeClient:
     stream_hook = None
     stream_texts: list = []  # 非空时按顺序作为正文返回（测试质量检查）
     finish_reasons: list = []
+    patches: dict = {}        # 章号 → 额外的记忆补丁字段（dict 或 正文 → dict 的函数）
+    memory_inputs: dict = {}  # 章号 → 更新记忆时 AI 收到的输入
+    arc_calls: list = []
 
     def __init__(self, db=None, novel_id=0):
         self.novel_id = novel_id
@@ -94,8 +100,19 @@ class FakeClient:
         if kind == "update_memory":
             old = plot(user.split("【最新一章】")[0])
             body = re.search(r"本章正文：\n(.*)", user, re.S).group(1).strip()
-            return {"text": json.dumps({"current_state": {"plot_progress": f"PLOT[{old}|{body}]"}},
-                                       ensure_ascii=False)}
+            no = int(re.search(r"【最新一章】\n第(\d+)章", user).group(1))
+            patch = {"current_state": {"plot_progress": f"PLOT[{old}|{body}]"},
+                     "timeline_add": [f"事件{no}"]}
+            extra = FakeClient.patches.get(no)
+            if callable(extra):
+                extra = extra(body)
+            patch.update(extra or {})
+            FakeClient.memory_inputs[no] = user
+            return {"text": json.dumps(patch, ensure_ascii=False)}
+        if kind == "arc_summary":
+            nos = re.findall(r"^第(\d+)章", user.split("】")[-1], re.M)
+            FakeClient.arc_calls.append((int(nos[0]), int(nos[-1])))
+            return {"text": f"ARC[{nos[0]}-{nos[-1]}]"}
         if kind == "extend_outline":
             return {"text": json.dumps({"volumes": [{"title": "第二卷 新篇", "chapters": [
                 {"no": 99, "title": f"新章{i}", "summary": f"新剧情{i}"} for i in range(1, 4)]}]}, ensure_ascii=False)}
@@ -112,6 +129,9 @@ def fake_ai(monkeypatch):
     FakeClient.stream_hook = None
     FakeClient.stream_texts = []
     FakeClient.finish_reasons = []
+    FakeClient.patches = {}
+    FakeClient.memory_inputs = {}
+    FakeClient.arc_calls = []
     monkeypatch.setattr(ai_service, "AiClient", FakeClient)
     return FakeClient
 
