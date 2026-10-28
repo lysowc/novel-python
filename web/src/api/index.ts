@@ -5,6 +5,7 @@ import type {
   ChapterRead, ConsistencyReport, Dashboard, HomeData, Idea, IdeaMessage,
   LoginResult, Memory, Novel, NovelDetail, NovelSetting, PageResult, Prompt,
   SystemConfig, TaskType, UsageStats, NovelAutomation, OperationLog, OutlineStatus,
+  StoryBible, CharacterProfile, StoryTerm, ArcSummary,
 } from '@/types/api'
 import { http, withQuery } from './http'
 import { readStream, type StreamHandlers } from './sse'
@@ -477,4 +478,38 @@ export function fetchConfig() {
 export function saveConfig(body: SystemConfig) {
   if (USE_MOCK) return mockApi.saveConfig(body)
   return http.put<SystemConfig>('/admin/config', body)
+}
+
+// ============ 长篇资料库 ============
+
+export function fetchBible(novelId: number | string) {
+  return http.get<StoryBible>(`/admin/novels/${novelId}/bible`)
+}
+
+export function createProfile(novelId: number | string, body: Partial<CharacterProfile>) {
+  return http.post<CharacterProfile>(`/admin/novels/${novelId}/profiles`, body)
+}
+
+export function updateProfile(id: number, body: Partial<CharacterProfile>) {
+  return http.put<CharacterProfile>(`/admin/profiles/${id}`, body)
+}
+
+export function deleteProfile(id: number) {
+  return http.del<null>(`/admin/profiles/${id}`)
+}
+
+export function createTerm(novelId: number | string, body: Partial<StoryTerm>) {
+  return http.post<StoryTerm>(`/admin/novels/${novelId}/terms`, body)
+}
+
+export function updateTerm(id: number, body: Partial<StoryTerm>) {
+  return http.put<StoryTerm>(`/admin/terms/${id}`, body)
+}
+
+export function deleteTerm(id: number) {
+  return http.del<null>(`/admin/terms/${id}`)
+}
+
+export function updateArc(id: number, body: { content: string }) {
+  return http.put<ArcSummary>(`/admin/arcs/${id}`, body)
 }

@@ -17,6 +17,7 @@ import ChaptersTab from './novel/ChaptersTab.vue'
 import MemoryTab from './novel/MemoryTab.vue'
 import ConsistencyTab from './novel/ConsistencyTab.vue'
 import AutomationTab from './novel/AutomationTab.vue'
+import BibleTab from './novel/BibleTab.vue'
 import { exportNovel, fetchAdminNovel, restoreNovel } from '@/api'
 import { formatNumber } from '@/lib/format'
 import type { NovelDetail } from '@/types/api'
@@ -35,6 +36,7 @@ const tabItems = [
   { value: 'outline', label: '大纲' },
   { value: 'chapters', label: '章节' },
   { value: 'memory', label: '记忆' },
+  { value: 'bible', label: '资料库' },
   { value: 'consistency', label: '审校' },
   { value: 'automation', label: '自动化' },
 ]
@@ -138,11 +140,13 @@ async function doExport(format: 'txt' | 'md' | 'epub') {
       </div>
 
       <Tabs v-model="active" class="w-full">
-        <TabsList class="grid w-full grid-cols-7 sm:w-auto">
+        <div class="-mx-1 overflow-x-auto px-1 pb-1">
+          <TabsList class="inline-flex w-max min-w-full sm:min-w-0">
           <TabsTrigger v-for="t in tabItems" :key="t.value" :value="t.value">
             {{ t.label }}
           </TabsTrigger>
-        </TabsList>
+          </TabsList>
+        </div>
         <TabsContent value="info" class="mt-5">
           <InfoTab :novel-id="Number(id)" :novel="novel" @saved="reload" />
         </TabsContent>
@@ -157,6 +161,9 @@ async function doExport(format: 'txt' | 'md' | 'epub') {
         </TabsContent>
         <TabsContent value="memory" class="mt-5">
           <MemoryTab :novel-id="Number(id)" />
+        </TabsContent>
+        <TabsContent value="bible" class="mt-5">
+          <BibleTab :novel-id="Number(id)" :deleted="!!novel.deleted_at" />
         </TabsContent>
         <TabsContent value="consistency" class="mt-5">
           <ConsistencyTab :novel-id="Number(id)" />

@@ -168,6 +168,8 @@ export type PromptType =
   | 'memory_update'
   | 'chapter_continue'
   | 'consistency_check'
+  | 'memory_patch'
+  | 'arc_summary'
 
 export interface Prompt {
   id: number
@@ -191,6 +193,7 @@ export type TaskType =
   | 'rebuild_memory'
   | 'extend_outline'
   | 'consistency_check'
+  | 'arc_summary'
 
 export interface AiTask {
   id: number
@@ -410,4 +413,56 @@ export interface LoginResult {
 
 export interface CreateNovelResult {
   novel_id: number
+}
+
+// ============ 长篇资料库 ============
+
+export interface RealmChange {
+  chapter: number
+  realm: string
+}
+
+export interface CharacterProfile {
+  id: number
+  name: string
+  aliases: string
+  role: string
+  appearance: string
+  personality: string
+  abilities: string
+  realm: string
+  realm_history: RealmChange[]
+  relationships: string
+  status: string
+  notes: string
+  first_chapter: number
+  last_chapter: number
+  locked: number
+  updated_at: string
+}
+
+export interface StoryTerm {
+  id: number
+  term: string
+  type: string
+  description: string
+  first_chapter: number
+  locked: number
+  updated_at: string
+}
+
+export interface ArcSummary {
+  id: number
+  start_no: number
+  end_no: number
+  content: string
+  updated_at: string
+}
+
+export interface StoryBible {
+  profiles: CharacterProfile[]
+  terms: StoryTerm[]
+  arcs: ArcSummary[]
+  arc_size: number
+  missing_arcs: { start_no: number; end_no: number }[]
 }

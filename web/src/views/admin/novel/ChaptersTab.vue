@@ -145,7 +145,7 @@ const extendOpen = ref(false)
 
 // 质量提醒：自动重写后仍有问题的章节
 const qualityTasks = computed(() =>
-  recentTasks.value.filter((t) => t.status === 'success' && t.params?.quality_warning && !dismissed.value.includes(t.id)),
+  recentTasks.value.filter((t) => t.status === 'success' && (t.params?.quality_warning || t.params?.repetition_warning) && !dismissed.value.includes(t.id)),
 )
 function qualityChapterNo(t: AiTask): number | undefined {
   const r = t.params?.resume as { chapter_no?: number } | undefined
@@ -439,10 +439,10 @@ onBeforeUnmount(stopPolling)
 
     <!-- 质量提醒 -->
     <div v-if="qualityTasks.length" class="mb-4 space-y-2 rounded-xl border border-dashed border-foreground/30 px-4 py-3">
-      <p class="text-sm font-medium">质量提醒：这些章节自动重写后仍有问题，建议看一下</p>
+      <p class="text-sm font-medium">质量提醒：这些章节可能有问题，建议看一下</p>
       <div v-for="t in qualityTasks" :key="t.id" class="flex flex-wrap items-start gap-2 text-sm">
         <p class="min-w-0 flex-1 text-muted-foreground">
-          <span class="text-foreground">{{ qualityChapterNo(t) ? `第 ${qualityChapterNo(t)} 章` : `任务 #${t.id}` }}</span>：{{ t.params?.quality_warning }}
+          <span class="text-foreground">{{ qualityChapterNo(t) ? `第 ${qualityChapterNo(t)} 章` : `任务 #${t.id}` }}</span>：<template v-if="t.params?.quality_warning">{{ t.params.quality_warning }}</template><template v-if="t.params?.quality_warning && t.params?.repetition_warning">；</template><template v-if="t.params?.repetition_warning">{{ t.params.repetition_warning }}</template>
         </p>
         <Button
           v-if="qualityChapterNo(t)"
