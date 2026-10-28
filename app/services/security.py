@@ -57,10 +57,12 @@ def record_failure(request: Request, username: str) -> None:
     try:
         r = _redis()
         try:
+            # 不用 EXPIRE ... NX（Redis 7 才支持，Ubuntu 22.04 自带的是 Redis 6）：
+            # 先 SET NX 建一个带过期时间的计数器，再 INCR，所有版本都支持
             pipe = r.pipeline()
             for k, _ in keys:
+                pipe.set(k, 0, ex=LOGIN_WINDOW, nx=True)
                 pipe.incr(k)
-                pipe.expire(k, LOGIN_WINDOW, nx=True)
             pipe.execute()
         finally:
             r.close()

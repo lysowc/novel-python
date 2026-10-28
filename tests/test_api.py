@@ -35,6 +35,24 @@ def test_login_rate_limit(S, client):
     assert r["code"] != 0 and "次数过多" in r["msg"], "超过次数后正确密码也要等"
 
 
+def test_login_rate_limit_counter_expires_on_redis6(S, monkeypatch):
+    """Redis 6 不支持 EXPIRE NX：计数器必须带过期时间，否则会永久锁死登录"""
+    import fakeredis
+    from app.services import security
+    server = fakeredis.FakeServer(version=6)
+    monkeypatch.setattr(ts, "connect_redis", lambda: fakeredis.FakeRedis(server=server, decode_responses=True))
+
+    class Req:
+        headers = {}
+        client = type("C", (), {"host": "1.2.3.4"})()
+    for _ in range(3):
+        security.record_failure(Req(), "admin")
+    r = ts.connect_redis()
+    key = "login:fail:1.2.3.4:admin"
+    assert r.get(key) == "3" and 0 < r.ttl(key) <= security.LOGIN_WINDOW
+    assert 0 < r.ttl("login:fail:user:admin") <= security.LOGIN_WINDOW
+
+
 def test_dashboard_security_warnings(S, client):
     data = client.get("/api/admin/dashboard").json()["data"]
     assert any("SESSION_SECRET" in w for w in data["security_warnings"])
