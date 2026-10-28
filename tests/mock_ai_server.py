@@ -18,6 +18,8 @@ def detect_scenario(all_text: str) -> tuple[str, str, int]:
                              "从此踏上修行之路。世界观为修仙世界，宗门林立、万族争锋。核心卖点是稳健发育与扮猪吃虎。"), 10
     if "生成完整的基础设定" in all_text or "输出完整的小说设定" in all_text:
         return "novel_setting", mock_setting(), 15
+    if "往后规划" in all_text:
+        return "outline_extend", mock_outline_extend(all_text), 15
     if "分卷章节大纲" in all_text:
         return "outline", mock_outline(), 15
     if "一致性审校" in all_text:
@@ -112,6 +114,17 @@ def mock_memory() -> str:
         ],
         "style_notes": "热血爽文风格，节奏明快",
     }, ensure_ascii=False)
+
+
+def mock_outline_extend(all_text: str) -> str:
+    import re
+    m = re.search(r"往后规划 (\d+) 章", all_text)
+    count = int(m.group(1)) if m else 5
+    m = re.search(r"从第 (\d+) 章开始编号", all_text)
+    start = int(m.group(1)) if m else 1
+    return json.dumps({"volumes": [{"title": "第二卷 天元秘境", "chapters": [
+        {"no": start + i, "title": f"秘境之路（{i + 1}）", "summary": f"林凡进入天元秘境的第 {i + 1} 段经历"}
+        for i in range(count)]}]}, ensure_ascii=False)
 
 
 def mock_consistency_report() -> str:

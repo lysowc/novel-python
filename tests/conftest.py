@@ -42,6 +42,12 @@ def S(tmp_path, monkeypatch):
     monkeypatch.setattr(task_service, "connect_redis_async",
                         lambda: FakeAsyncRedis(server=server, decode_responses=True))
     monkeypatch.setattr(prompt_service, "render", lambda db, key, variables=None: "sys")
+    # 假 AI 的正文很短，默认关掉质量检查（质量检查有专门的测试）
+    from app.models import SystemConfig
+    db = dbm.SessionLocal()
+    db.add(SystemConfig(key="quality_check_enabled", value="0"))
+    db.commit()
+    db.close()
     yield dbm.SessionLocal
     dbm.SessionLocal.configure(bind=dbm.engine)
     engine.dispose()
@@ -58,6 +64,8 @@ class FakeClient:
     contexts: dict = {}
     fail = {"generate_summary": 0, "update_memory": 0}
     stream_hook = None
+    stream_texts: list = []  # 非空时按顺序作为正文返回（测试质量检查）
+    finish_reasons: list = []
 
     def __init__(self, db=None, novel_id=0):
         self.novel_id = novel_id
@@ -69,7 +77,11 @@ class FakeClient:
         FakeClient.contexts[no] = user
         if FakeClient.stream_hook:
             FakeClient.stream_hook(on_delta)
-        return {"text": f"正文ch{no}{FakeClient.version}"}
+        text = FakeClient.stream_texts.pop(0) if FakeClient.stream_texts else f"正文ch{no}{FakeClient.version}"
+        if on_delta:
+            on_delta(text)
+        reason = FakeClient.finish_reasons.pop(0) if FakeClient.finish_reasons else "stop"
+        return {"text": text, "finish_reason": reason}
 
     def chat(self, messages, options):
         kind = options.get("task_type")
@@ -84,6 +96,9 @@ class FakeClient:
             body = re.search(r"本章正文：\n(.*)", user, re.S).group(1).strip()
             return {"text": json.dumps({"current_state": {"plot_progress": f"PLOT[{old}|{body}]"}},
                                        ensure_ascii=False)}
+        if kind == "extend_outline":
+            return {"text": json.dumps({"volumes": [{"title": "第二卷 新篇", "chapters": [
+                {"no": 99, "title": f"新章{i}", "summary": f"新剧情{i}"} for i in range(1, 4)]}]}, ensure_ascii=False)}
         if kind == "consistency_check":
             return {"text": json.dumps({"status": "ok", "summary": "好", "issues": []})}
         return {"text": "{}"}
@@ -95,6 +110,8 @@ def fake_ai(monkeypatch):
     FakeClient.contexts = {}
     FakeClient.fail = {"generate_summary": 0, "update_memory": 0}
     FakeClient.stream_hook = None
+    FakeClient.stream_texts = []
+    FakeClient.finish_reasons = []
     monkeypatch.setattr(ai_service, "AiClient", FakeClient)
     return FakeClient
 

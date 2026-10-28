@@ -29,8 +29,8 @@ def test_regenerate_uses_only_earlier_context_and_snapshot(S, fake_ai):
     ctx = fake_ai.contexts[2]
     assert "正文ch3" not in ctx and "正文ch2v1" not in ctx, "不能看到后续章节和本章旧版本"
     assert "PLOT[|正文ch1v1]" in ctx, "记忆用第 1 章结束时的快照"
-    assert current_plot(S, 1) == "|正文ch1v1|正文ch2v1|正文ch3v1", "中间章节只更新快照"
     assert snapshot_plots(S, 1)[2] == "|正文ch1v1|正文ch2v2"
+    assert current_plot(S, 1) == "|正文ch1v1|正文ch2v2|正文ch3v1", "后续章节记忆自动重建"
 
     run_task(S, "regenerate_chapter", 1, chapter_no=3)
     assert current_plot(S, 1) == "|正文ch1v1|正文ch2v2|正文ch3v2", "重写最后一章不叠加旧版本"
@@ -63,7 +63,22 @@ def test_legacy_novel_without_snapshots(S, fake_ai):
     assert memory_store.STALE_NOTE in fake_ai.contexts[2], "无快照时带提示"
 
 
+def test_middle_regenerate_without_auto_rebuild(S, fake_ai):
+    db = S()
+    db.add(SystemConfig(key="auto_rebuild_memory", value="0"))
+    db.commit()
+    make_novel(S, 1)
+    for _ in range(3):
+        run_task(S, "continue_chapter", 1)
+    fake_ai.version = "v2"
+    run_task(S, "regenerate_chapter", 1, chapter_no=2)
+    assert current_plot(S, 1) == "|正文ch1v1|正文ch2v1|正文ch3v1", "关闭自动重建时只更新该章快照"
+
+
 def test_rebuild_memory_from_chapter(S, fake_ai):
+    db = S()
+    db.add(SystemConfig(key="auto_rebuild_memory", value="0"))
+    db.commit()
     make_novel(S, 1)
     for _ in range(4):
         run_task(S, "continue_chapter", 1)

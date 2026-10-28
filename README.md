@@ -30,6 +30,17 @@ AI 小说工坊的 **Python 3.12 + FastAPI** 后端 + 自带前端（Vue 3 + Tai
 - **按模型上下文窗口**：在「AI 配置」填写模型上下文窗口后，自动按「窗口 − 输出 − 预留」限制上下文
 - **安全**：登录失败限流（同 IP+账号 10 分钟 5 次）；默认 SESSION_SECRET / admin123 密码在仪表盘和启动日志里提醒
 - **与 PHP 版共用 Redis**：PHP 的 worker 不认 Python 版的小说锁与取消信号，两版 worker 同时运行时可在 `.env` 设 `AI_QUEUE_KEY` 使用独立队列
+- **小说回收站**：删除小说先进回收站（`novel.deleted_at`），可恢复；保留天数（默认 30 天）到期后自动彻底删除
+- **操作记录**：后台所有新建/修改/删除/登录自动记录（谁、何时、做了什么、是否成功、IP），「操作记录」页可搜索
+- **模型分工**：「AI 配置」里指定写作模型（正文/设定/大纲）和辅助模型（摘要/记忆/审校/质检）
+- **费用上限**：系统设置里设每日总上限、每本小说每日上限，超出后不再发起新任务（连续续写会停下，第二天自动恢复）
+- **定时续写**：小说「自动化」页设置每天几点续写几章（按 `TIMEZONE`，默认 Asia/Shanghai）；由 worker 内的调度线程执行
+- **大纲续写**：大纲快用完时提醒；开启「自动续写大纲」后写下一章前自动往后规划；也可手动续写
+- **质量检查**：字数明显不足、截断、和上一章大段重复、段落重复时自动重写一次，保留较好的一版并在章节页提醒
+- **重写中间章节后自动重建后续记忆**（可在系统设置关闭）
+- **取消更及时**：流式读取放在后台线程，模型还没吐出第一个字时也能在约 1 秒内取消
+- **人物关系图 / 伏笔一览**：「记忆」页新增两个视图
+- **读者书签**：阅读页可加书签，小说详情页查看；书签与阅读进度存在读者自己的浏览器里
 - **多进程 worker**：默认 3 个进程并行，`WORKERS=N` 调整；同一本小说由 Redis 锁（`ai:lock:novel:{id}`，心跳续期）保证串行、不同小说并行，任务领取为原子操作不会重复执行；启动时自动恢复卡死任务并清除残留锁
 - **AI 日志记录 Prompt**：每次调用把实际使用的 system prompt 写入日志（`ai_log.prompt`），后台「AI 日志」可查看
 
@@ -67,7 +78,7 @@ bash scripts/stop.sh
 
 ## 数据库迁移
 
-> 升级到新版本后先执行一次 `.venv/bin/python -m commands.migrate`（0004 记忆快照、0005 章节版本、0006 用量统计、0007 模型上下文窗口），再重启服务。
+> 升级到新版本后先执行一次 `.venv/bin/python -m commands.migrate`（0004 记忆快照、0005 章节版本、0006 用量统计、0007 模型上下文窗口、0008 回收站/操作记录/自动化），再重启服务。
 
 ```bash
 # 应用未执行的迁移（migrations/*.sql，执行记录在 migrations 表）
@@ -171,7 +182,7 @@ app/                    FastAPI 后端
                         prompt_service / prompt_defaults / task_service
   worker.py             AI 任务消费进程（独立进程）
 commands/               migrate（迁移）/ install（初始化）/ verify（回归自测）
-migrations/             0001_init.sql … 0007_model_context_window.sql
+migrations/             0001_init.sql … 0008_trash_audit_automation.sql
 web/                    Vue 3 + Tailwind 前端源码（构建产物 → static/）
 static/                 前端构建产物（后端直接服务，gitignore）
 scripts/                start.sh / stop.sh（一键启动/停止）

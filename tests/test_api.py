@@ -127,23 +127,87 @@ def test_usage_stats(S, client):
     assert {r["novel_id"] for r in data["by_novel"]} == {0, 5}
 
 
-def test_delete_novel_guard_and_cleanup(S, client):
+def test_trash_delete_restore_purge(S, client):
     make_novel(S, 1)
     add_chapter(S, 1, 1, "x")
     db = S()
+    n = db.get(Novel, 1)
+    n.is_public, n.status = 1, "published"
     db.add(Idea(id=1, novel_id=1, title="i", content="", status="used"))
     db.add(AiTask(task_type="generate_outline", ref_id=1, params={}, status="pending", error_message=""))
     db.commit()
-    assert client.delete("/api/admin/novels/1").json()["code"] != 0
+    assert client.delete("/api/admin/novels/1").json()["code"] != 0, "有任务时拒绝"
     db.query(AiTask).update({"status": "success"})
     db.commit()
     lock = ts.NovelLock(1)
     lock.acquire()
     assert client.delete("/api/admin/novels/1").json()["code"] != 0, "持锁期间拒绝"
     lock.release()
-    assert client.delete("/api/admin/novels/1").json()["code"] == 0
+
+    r = client.delete("/api/admin/novels/1").json()
+    assert r["code"] == 0 and "回收站" in r["msg"]
+    assert S().get(Novel, 1).deleted_at is not None and S().query(Chapter).count() == 1, "软删除不动数据"
+    assert client.get("/api/admin/novels").json()["data"]["total"] == 0
+    trash = client.get("/api/admin/novels?trash=1").json()["data"]
+    assert trash["total"] == 1 and trash["trash_total"] == 1
+    assert client.get("/api/novels/1").json()["code"] != 0, "前台看不到回收站里的小说"
+    r = client.post("/api/admin/ai/tasks", json={"task_type": "generate_outline", "novel_id": 1}).json()
+    assert r["code"] != 0 and "回收站" in r["msg"]
+
+    assert client.post("/api/admin/novels/1/restore").json()["code"] == 0
+    assert client.get("/api/novels/1").json()["code"] == 0
+    assert client.delete("/api/admin/novels/1/purge").json()["code"] != 0, "必须先移入回收站"
+
+    client.delete("/api/admin/novels/1")
+    assert client.delete("/api/admin/novels/1/purge").json()["code"] == 0
     db = S()
-    assert db.get(Novel, 1) is None and db.query(AiTask).count() == 0 and db.get(Idea, 1).novel_id is None
+    assert db.get(Novel, 1) is None and db.query(Chapter).count() == 0
+    assert db.query(AiTask).count() == 0 and db.get(Idea, 1).novel_id is None
+
+
+def test_trash_auto_purge(S):
+    from datetime import timedelta
+    from app.helpers import now
+    from app.services import novel_trash
+    make_novel(S, 1)
+    make_novel(S, 2)
+    db = S()
+    db.get(Novel, 1).deleted_at = now() - timedelta(days=31)
+    db.get(Novel, 2).deleted_at = now() - timedelta(days=5)
+    db.commit()
+    assert novel_trash.purge_expired(db) == 1
+    assert S().get(Novel, 1) is None and S().get(Novel, 2) is not None
+
+
+def test_operation_log(S, client):
+    make_novel(S, 1, title="雁门")
+    add_chapter(S, 1, 1, "x")
+    cid = S().query(Chapter).one().id
+    client.delete(f"/api/admin/chapters/{cid}")
+    client.delete("/api/admin/novels/1")
+    TestClient(client.app).post("/api/admin/login", json={"username": "admin", "password": "错的密码"})
+    logs = client.get("/api/admin/operation-logs").json()["data"]["list"]
+    actions = [(l["action"], l["summary"], l["success"], l["username"]) for l in logs]
+    assert ("删除章节", "《雁门》第1章 第1章", 1, "admin") in actions, actions
+    assert ("删除小说（移入回收站）", "《雁门》", 1, "admin") in actions
+    fail_login = next(l for l in logs if l["action"] == "登录" and not l["success"])
+    assert fail_login["username"] == "admin" and "错的密码" not in json.dumps(fail_login, ensure_ascii=False)
+    assert client.get("/api/admin/operation-logs?failed_only=1").json()["data"]["total"] == 1
+
+
+def test_automation_settings_and_outline_status(S, client):
+    make_novel(S, 1, outline=json.dumps({"volumes": [{"title": "一", "chapters": [
+        {"no": i, "title": f"t{i}", "summary": ""} for i in range(1, 6)]}]}))
+    for no in range(1, 4):
+        add_chapter(S, 1, no, "x")
+    st = client.get("/api/admin/novels/1/outline-status").json()["data"]
+    assert st["remaining"] == 2 and st["warn"] is True
+    assert client.get("/api/admin/dashboard").json()["data"]["outline_warnings"][0]["novel_id"] == 1
+    assert client.put("/api/admin/novels/1/automation", json={"schedule_time": "25:00"}).json()["code"] != 0
+    r = client.put("/api/admin/novels/1/automation", json={
+        "schedule_enabled": True, "schedule_time": "07:30", "chapters_per_run": 3,
+        "auto_extend_outline": True, "extend_chapters": 5}).json()
+    assert r["code"] == 0 and r["data"]["schedule_time"] == "07:30" and r["data"]["auto_extend_outline"] == 1
 
 
 def test_task_stream_incremental_and_replay(S, client):
