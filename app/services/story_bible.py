@@ -5,6 +5,7 @@
 - 名词表：地名、功法、物品、势力等专有名词的统一说法，防止前后写法不一。
 - 分段总结：每 N 章一段的前情提要。章节摘要窗口只装得下最近几十章，更早的剧情靠它记住。
 """
+import re
 from sqlalchemy.orm import Session
 
 from app.helpers import now
@@ -115,6 +116,23 @@ def mark_appearances(db: Session, novel_id: int, chapter_no: int, content: str) 
                 count += 1
     db.flush()
     return count
+
+
+DEAD_PATTERN = re.compile(r"已死|身亡|死亡|自尽|毙命|阵亡|殒命|被杀|已故|去世|丧命|遇害|伏诛")
+NOT_DEAD_PATTERN = re.compile(r"假死|诈死|未死|没死|险些|差点|险死|重伤未死|死里逃生|生死未卜|下落不明")
+
+
+def is_dead(status: str) -> bool:
+    status = status or ""
+    return bool(DEAD_PATTERN.search(status)) and not NOT_DEAD_PATTERN.search(status)
+
+
+def dead_profiles(db: Session, novel_id: int, before_no: int | None = None) -> list[CharacterProfile]:
+    """档案状态写着已死亡的人物。before_no：只算本章之前登场的（重写中间章节时不提前"剧透"后面才死的人）"""
+    rows = [p for p in profiles(db, novel_id) if is_dead(p.status)]
+    if before_no is not None:
+        rows = [p for p in rows if (p.last_chapter or 0) < before_no]
+    return rows
 
 
 def relevant_profiles(db: Session, novel: Novel, chapter_no: int, hint_text: str,

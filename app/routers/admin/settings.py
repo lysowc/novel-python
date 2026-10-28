@@ -39,6 +39,7 @@ CONFIG_KEYS = {
     "outline_warn_remaining": "大纲剩余几章时提醒/续写",
     "arc_summary_size": "每多少章生成一段分段总结（0=关闭）",
     "repetition_check_enabled": "检测与前文重复的桥段",
+    "outline_sync_enabled": "每章写完按实际内容校准后续大纲",
     "reasoning_writing": "写作时的思考强度（none/low/high/max）",
     "reasoning_auxiliary": "摘要/记忆等辅助任务的思考强度",
     "reasoning_review": "一致性审校的思考强度",
@@ -57,6 +58,7 @@ CONFIG_DEFAULTS = {
     "auto_rebuild_memory": "1", "outline_warn_remaining": "3",
     "arc_summary_size": "20", "repetition_check_enabled": "1",
     "reasoning_writing": "high", "reasoning_auxiliary": "none", "reasoning_review": "low",
+    "outline_sync_enabled": "1",
 }
 
 

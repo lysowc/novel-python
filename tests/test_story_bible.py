@@ -304,3 +304,58 @@ def test_reasoning_effort_by_task_type(S):
     assert "reasoning_effort" not in payload(ds, model, "continue_chapter"), "off=不传"
     assert output_limit(plain, {"max_tokens": 100, "_reasoning": "none"}) == 100
     db.close()
+
+
+# ---------- 不错乱：大纲校准、死亡名单 ----------
+
+def _outline(n):
+    return json.dumps({"volumes": [{"title": "第一卷", "chapters": [
+        {"no": i, "title": f"原标题{i}", "summary": f"原大纲{i}"} for i in range(1, n + 1)]}]}, ensure_ascii=False)
+
+
+def test_outline_sync_adjusts_only_upcoming_window(S, fake_ai):
+    from conftest import FakeClient
+    from app.models import Novel
+    make_novel(S, 1, outline=_outline(20))
+    FakeClient.outline_sync[1] = {"deviation": "明显", "reason": "狱卒被救下而不是被毒死", "chapters": [
+        {"no": 1, "title": "x", "summary": "不许改已写章节"},
+        {"no": 3, "title": "活证人", "summary": "狱卒作为活证人藏身后厨"},
+        {"no": 4, "summary": "原大纲4"},              # 没变化
+        {"no": 15, "summary": "超出窗口不许改"},
+    ]}
+    task = run_task(S, "continue_chapter", 1)
+    db = S()
+    chapters = {c["no"]: c for c in db.get(Novel, 1).get_outline_array()["volumes"][0]["chapters"]}
+    db.close()
+    assert chapters[1]["summary"] == "原大纲1"
+    assert chapters[3] == {"no": 3, "title": "活证人", "summary": "狱卒作为活证人藏身后厨"}
+    assert chapters[15]["summary"] == "原大纲15"
+    assert "第3章" in (task.params or {}).get("outline_adjusted", "") and "狱卒" in task.params["outline_adjusted"]
+    assert "原大纲9" in FakeClient.outline_inputs[1] and "第10章" in FakeClient.outline_inputs[1]
+
+
+def test_outline_sync_off_and_failure_does_not_break_chapter(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1, outline=_outline(5))
+    FakeClient.fail["outline_sync"] = 1
+    task = run_task(S, "continue_chapter", 1)
+    assert task.status == "success"
+    _config(S, outline_sync_enabled=0)
+    run_task(S, "continue_chapter", 1)
+    assert 2 not in FakeClient.outline_inputs
+
+
+def test_dead_characters_listed_in_context(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1, outline=_outline(5))
+    FakeClient.patches[1] = {"profiles": [
+        {"name": "青绸衫", "status": "已死亡：被搜出封条残片后咬破毒囊自尽（第1章）"},
+        {"name": "石柱子", "status": "中箭坠坡，生死未卜"},
+        {"name": "沈砚", "role": "主角", "status": "重伤"}]}
+    run_task(S, "continue_chapter", 1)
+    run_task(S, "continue_chapter", 1)
+    ctx = FakeClient.contexts[2]
+    assert "【已死亡人物】" in ctx and "青绸衫（已死亡" in ctx
+    dead_part = ctx.split("【已死亡人物】")[1].split("【")[0]
+    assert "石柱子" not in dead_part and "沈砚" not in dead_part
+    assert story_bible.is_dead("已故") and not story_bible.is_dead("假死脱身")

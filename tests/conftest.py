@@ -72,6 +72,8 @@ class FakeClient:
     patches: dict = {}        # 章号 → 额外的记忆补丁字段（dict 或 正文 → dict 的函数）
     memory_inputs: dict = {}  # 章号 → 更新记忆时 AI 收到的输入
     arc_calls: list = []
+    outline_sync: dict = {}   # 章号 → 大纲校准返回的 JSON
+    outline_inputs: dict = {}
 
     def __init__(self, db=None, novel_id=0):
         self.novel_id = novel_id
@@ -116,6 +118,11 @@ class FakeClient:
         if kind == "extend_outline":
             return {"text": json.dumps({"volumes": [{"title": "第二卷 新篇", "chapters": [
                 {"no": 99, "title": f"新章{i}", "summary": f"新剧情{i}"} for i in range(1, 4)]}]}, ensure_ascii=False)}
+        if kind == "outline_sync":
+            no = int(re.search(r"第(\d+)章摘要", user).group(1))
+            FakeClient.outline_inputs[no] = user
+            return {"text": json.dumps(FakeClient.outline_sync.get(no, {"deviation": "无", "chapters": []}),
+                                       ensure_ascii=False)}
         if kind == "consistency_check":
             return {"text": json.dumps({"status": "ok", "summary": "好", "issues": []})}
         return {"text": "{}"}
@@ -132,6 +139,8 @@ def fake_ai(monkeypatch):
     FakeClient.patches = {}
     FakeClient.memory_inputs = {}
     FakeClient.arc_calls = []
+    FakeClient.outline_sync = {}
+    FakeClient.outline_inputs = {}
     monkeypatch.setattr(ai_service, "AiClient", FakeClient)
     return FakeClient
 

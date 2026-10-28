@@ -44,6 +44,7 @@ const groups: { title: string; fields: Field[] }[] = [
       { key: 'quality_min_ratio', label: '字数不足判定比例', type: 'number', placeholder: '0.5', hint: '正文字数低于「目标字数 × 这个比例」算字数不足，默认 0.5', step: 0.1 },
       { key: 'auto_rebuild_memory', label: '重写中间章节后自动重建记忆', type: 'number', placeholder: '1', hint: '1=重写中间章节后自动逐章重算后续章节的记忆（每章一次 AI 调用）；0=只更新这一章', step: 1 },
       { key: 'consistency_auto_interval', label: '自动审校间隔（章）', type: 'number', placeholder: '10', hint: '每 N 章自动运行一致性审校（0=关闭）', step: 1 },
+      { key: 'outline_sync_enabled', label: '每章写完校准后续大纲', type: 'number', placeholder: '1', hint: '1=AI 写偏了大纲（改了谁死谁活、证据去向等）时，自动把后面几章大纲改到能接上，避免越写越乱；0=关闭', step: 1 },
       { key: 'arc_summary_size', label: '分段总结间隔（章）', type: 'number', placeholder: '20', hint: '每写满 N 章自动生成一段前情总结，长篇写到后面也不会忘掉早期剧情（0=关闭）', step: 1 },
       { key: 'repetition_check_enabled', label: '检测重复桥段', type: 'number', placeholder: '1', hint: '1=每章写完和前 30 章的摘要比对，情节太像时在章节页提醒；0=关闭', step: 1 },
       { key: 'outline_warn_remaining', label: '大纲剩余几章时提醒', type: 'number', placeholder: '3', hint: '大纲只剩这么多章没写时提醒；小说开启了「自动续写大纲」时会自动往后规划', step: 1 },

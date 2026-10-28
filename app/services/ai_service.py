@@ -29,8 +29,24 @@ MEMORY_PATCH_RULES = (
     "未决的小事放 unresolved_add。每章新增伏笔一般不超过 3 条\n"
     "- 关系到全书主线、必须在后面交代清楚的伏笔，写成 {\"description\": \"...\", \"major\": true}；"
     "旧记忆里已有、但其实是主线的，把描述放进 foreshadowing_major 列表\n"
-    "- 回收伏笔时照抄旧记忆里的描述；旧记忆只列出了和本章相关的部分，没列出的不代表已删除，不要重复添加"
+    "- 回收伏笔时照抄旧记忆里的描述；旧记忆只列出了和本章相关的部分，没列出的不代表已删除，不要重复添加\n"
+    "- 有人物死亡（哪怕是小角色）：在 profiles 里记这个人，status 写「已死亡：怎么死的（第N章）」；假死、重伤不算"
 )
+
+OUTLINE_SYNC_SYSTEM = (
+    "你是长篇小说的大纲编辑。作者写正文时常常偏离原大纲（改了谁死谁活、证据去向、人物关系、事件顺序）。"
+    "你的任务：对照本章原大纲和本章实际写出的内容，判断后续几章的大纲还能不能接上；接不上的，改写那几章的大纲。\n"
+    "原则：\n"
+    "1. 已写的正文是事实，大纲去适应正文，不能要求正文改回去\n"
+    "2. 只改确实接不上或已经提前写过的章节；能接上的不要动，措辞也不要改\n"
+    "3. 保住主线方向和后面的关键转折、结局；必要时用新的情节把剧情引回主线\n"
+    "4. 被正文提前写掉的情节节点，后面的章节不要再写一遍；死了的人后面不能再活着出场\n"
+    "只输出 JSON：{\"deviation\": \"无|轻微|明显\", \"reason\": \"一句话说明偏离了什么\", "
+    "\"chapters\": [{\"no\": 章号, \"title\": \"章标题\", \"summary\": \"本章目标\"}]}，"
+    "chapters 只放需要修改的章节，不需要修改就给空数组"
+)
+OUTLINE_SYNC_WINDOW = 8  # 每次最多调整后面这么多章的大纲
+
 
 
 def parse_sections(text: str) -> dict:
@@ -336,6 +352,18 @@ class AiService:
 
         # 5.2 分段总结：写满一段（默认 20 章）就压缩成一段前情提要；失败不影响本章
         self.fill_arc_summaries(novel, on_stage)
+
+        # 5.3 大纲校准：正文偏离了大纲时，把后面几章的大纲改到能接上（只在写最新一章时做；失败不影响本章）
+        if not has_later and int(float(config_value(self.db, "outline_sync_enabled", 1))) > 0:
+            try:
+                changed = self.sync_outline(novel, chapter, on_stage)
+                if changed and task is not None:
+                    task.params = {**(task.params or {}), "outline_adjusted": changed}
+                    self.db.commit()
+            except CallbackAbort:
+                raise
+            except Exception as e:
+                on_stage and on_stage("outline_sync_failed", f"大纲校准失败（不影响本章）：{e}")
 
         # 6. 自动一致性审校（每 N 章）
         interval = int(float(config_value(self.db, "consistency_auto_interval", 10)))
@@ -649,6 +677,71 @@ class AiService:
         story_bible.save_arc(self.db, novel.id, start_no, end_no, text)
         self.db.commit()
         return text
+
+    def sync_outline(self, novel: Novel, chapter: Chapter, on_stage=None) -> str:
+        """对照本章原大纲和实际写出的内容，调整后续 OUTLINE_SYNC_WINDOW 章的大纲。返回改动说明（没改返回空串）"""
+        chapter_no = int(chapter.chapter_no)
+        outline = novel.get_outline_array()
+        volumes = [v for v in outline.get("volumes", []) if isinstance(v, dict)]
+        entries = [c for v in volumes for c in (v.get("chapters") or []) if isinstance(c, dict)]
+        window = [c for c in entries if chapter_no < int(c.get("no") or 0) <= chapter_no + OUTLINE_SYNC_WINDOW]
+        if not window:
+            return ""
+        later = [c for c in entries if int(c.get("no") or 0) > chapter_no + OUTLINE_SYNC_WINDOW]
+
+        def line(c):
+            return f"第{c.get('no')}章 {c.get('title', '')}：{c.get('summary', '')}"
+
+        on_stage and on_stage("outline_sync", "正在对照大纲检查本章是否偏离，必要时调整后续大纲...")
+        user = (
+            context_builder.setting_text(novel)[:6000]
+            + "\n\n【本章原大纲】\n" + context_builder.outline_target(novel, chapter_no).split("\n（")[0]
+            + f"\n\n【本章实际写了什么（第{chapter_no}章摘要）】\n{chapter.summary or ''}"
+            + "\n\n【本章结尾】\n" + (chapter.content or "")[-1500:]
+            + "\n\n【小说记忆（当前状态）】\n"
+            + memory_service.to_context_text(memory_store.current_content(self.db, novel.id), chapter.content or "")
+            + "\n\n【已死亡人物】\n" + ("、".join(p.name for p in story_bible.dead_profiles(self.db, novel.id)) or "（无）")
+            + f"\n\n【后续大纲（可调整，第{chapter_no + 1}~{chapter_no + OUTLINE_SYNC_WINDOW}章）】\n"
+            + "\n".join(line(c) for c in window)
+            + "\n\n【更后面的大纲（只读，用来把握主线方向，不要修改）】\n"
+            + ("\n".join(line(c) for c in later[:40]) or "（无）")
+        )
+        result = self.client.chat(
+            [{"role": "system", "content": OUTLINE_SYNC_SYSTEM}, {"role": "user", "content": user}],
+            {"task_type": "outline_sync", "max_tokens": 4096},
+        )
+        data = extract_json(result["text"])
+        if not data:
+            raise RuntimeError("AI 未返回合法 JSON")
+        allowed = {int(c.get("no") or 0): c for c in window}
+        changed = []
+        for item in data.get("chapters") or []:
+            if not isinstance(item, dict):
+                continue
+            no = int(item.get("no") or 0) if str(item.get("no") or "").strip().isdigit() else 0
+            summary = str(item.get("summary") or "").strip()
+            if no not in allowed or not summary:
+                continue
+            target = allowed[no]
+            if summary == str(target.get("summary") or "").strip():
+                continue
+            target["summary"] = summary
+            title = str(item.get("title") or "").strip()
+            if title:
+                target["title"] = title
+            changed.append(no)
+        if not changed:
+            on_stage and on_stage("outline_sync_done", "本章与大纲衔接正常，后续大纲无需调整")
+            return ""
+        novel.outline = json.dumps({**outline, "volumes": volumes}, ensure_ascii=False)
+        novel.updated_at = now()
+        self.db.commit()
+        reason = str(data.get("reason") or "").strip()
+        msg = ("已按本章实际内容调整第" + "、".join(str(n) for n in sorted(changed)) + "章大纲"
+               + (f"：{reason}" if reason else ""))
+        print(f"[outline] 第{chapter_no}章后{msg}")
+        on_stage and on_stage("outline_sync_done", msg)
+        return msg
 
     def fill_arc_summaries(self, novel: Novel, on_stage=None, raise_errors: bool = False) -> int:
         """补齐所有已写满但还没有（或已作废）的分段总结，返回生成的段数"""

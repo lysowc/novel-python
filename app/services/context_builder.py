@@ -70,7 +70,9 @@ def outline_target(novel: Novel, chapter_no: int) -> str:
     for volume in outline.get("volumes", []):
         for chapter in volume.get("chapters", []):
             if int(chapter.get("no") or 0) == chapter_no:
-                return f"第{chapter_no}章 {chapter.get('title', '')}\n本章目标：{chapter.get('summary', '')}"
+                return (f"第{chapter_no}章 {chapter.get('title', '')}\n本章目标：{chapter.get('summary', '')}\n"
+                        "（本章目标里的关键情节——谁死谁活、证据和物品落到谁手里、谁和谁结盟或反目——必须写到，"
+                        "不要改成相反的结果；细节和过程可以自由发挥）")
     return f"第{chapter_no}章（大纲未覆盖此章，请根据剧情走向自由创作，并自拟合适的情节）"
 
 
@@ -159,12 +161,16 @@ def build_chapter_context(
     profile_rows = story_bible.relevant_profiles(db, novel, chapter_no, hint)
     term_rows = story_bible.relevant_terms(db, novel, chapter_no, hint)
     profile_n, term_n = len(profile_rows), len(term_rows)
+    dead_rows = story_bible.dead_profiles(db, novel.id, chapter_no)
 
     def assemble() -> str:
         sections = [
             ("【小说设定】", fixed["setting"]),
             ("【小说记忆（当前状态）】", fixed["memory"]),
         ]
+        if dead_rows:
+            sections.append(("【已死亡人物】（不得再以活人身份出场、说话或行动，只能被回忆、提及）",
+                             "、".join(f"{p.name}（{(p.status or '')[:30]}）" for p in dead_rows[:60])))
         if profile_rows[:profile_n]:
             sections.append(("【本章相关人物档案】（人设以此为准，不要写错外貌、性格、能力、境界）",
                              story_bible.render_profiles(profile_rows[:profile_n], chapter_no)))
