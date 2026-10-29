@@ -365,3 +365,40 @@ def test_dead_characters_listed_in_context(S, fake_ai):
     dead_part = ctx.split("【已死亡人物】")[1].split("【")[0]
     assert "石柱子" not in dead_part and "沈砚" not in dead_part
     assert story_bible.is_dead("已故") and not story_bible.is_dead("假死脱身")
+
+
+# ---------- 文风提醒 ----------
+
+def test_style_hints_flags_overused_words_and_repeated_openings(S, fake_ai):
+    from conftest import add_chapter
+    from app.models import Novel
+    from app.services import style
+    make_novel(S, 1)
+    body = ("天亮前，沈砚攥着断剑蹲在窑口。——他没动。——又攥了攥。——攥紧。\n"
+            "沈砚没说话。\n" + "风从碱滩上刮过来，很平常的一段描写。" * 20 + "\n他攥着断剑等老梁回来。")
+    for no in (1, 2, 3):
+        add_chapter(S, 1, no, body)
+    db = S()
+    novel = db.get(Novel, 1)
+    text = style.style_hints(db, novel, 4)
+    assert "破折号" not in text, "每章 3 个破折号不算多"
+    assert "「攥」每章约 5 次" in text
+    assert "沈砚没说话。" in text, "反复单独成段的短句"
+    assert "第3章：天亮前，沈砚攥着断剑蹲在窑口。" in text and "第3章：他攥着断剑等老梁回来。" in text
+    add_chapter(S, 1, 4, "——" * 10 + "平常的一句话。")
+    assert "破折号最近每章平均" in style.style_hints(db, novel, 5)
+    assert style.style_hints(db, novel, 1) == ""
+    db.close()
+
+
+def test_style_hints_in_chapter_context_and_no_dash_separator(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1)
+    for _ in range(3):
+        run_task(S, "continue_chapter", 1)
+    ctx = FakeClient.contexts[3]
+    assert "【文风提醒】" in ctx and ctx.index("【文风提醒】") < ctx.index("【本章大纲】")
+    assert "\n---\n" not in ctx.split("【最近章节正文】")[1], "最近正文之间不用 --- 分隔，免得模型照抄"
+    _config(S, style_hints_enabled=0)
+    run_task(S, "continue_chapter", 1)
+    assert "【文风提醒】" not in FakeClient.contexts[4]

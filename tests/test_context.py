@@ -10,12 +10,14 @@ def test_budget_shrinks_recent_chapters_first(S):
         add_chapter(S, 1, no, f"正文ch{no}" + "字" * 40)
     db = S()
     novel = db.get(Novel, 1)
+    def recent(ctx):  # 只看【最近章节正文】这一段（文风提醒里也会引用最近几章的开头结尾）
+        return ctx.split("【最近章节正文】")[1].split("【")[0]
     full = context_builder.build_chapter_context(db, novel, 5, "", [], "记忆")
-    assert full.count("正文ch") == 4
+    assert recent(full).count("正文ch") == 4
     db.add(SystemConfig(key="context_max_chars", value="200"))
     db.commit()
     small = context_builder.build_chapter_context(db, novel, 5, "", [], "记忆")
-    assert small.count("正文ch") == 1 and "正文ch4" in small and "【本章大纲】" in small
+    assert recent(small).count("正文ch") == 1 and "正文ch4" in recent(small) and "【本章大纲】" in small
 
 
 def test_budget_from_model_context_window(S):

@@ -218,8 +218,8 @@ def test_ai_client_stream_parses_text_usage_finish(S, monkeypatch):
                   {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}})
     _patch_http(monkeypatch, lambda request: httpx.Response(200, stream=SlowStream(chunks)))
     got = []
-    client = ai_client.AiClient(S(), novel_id=7)
-    result = client.chat_stream([{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+    ac = ai_client.AiClient(S(), novel_id=7)
+    result = ac.chat_stream([{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
                                 {"task_type": "continue_chapter"}, on_delta=got.append)
     assert result["text"] == "你好世界" and got == ["你好", "世界"]
     assert result["finish_reason"] == "stop" and result["done"] is True
@@ -231,16 +231,16 @@ def test_ai_client_stream_cancel_before_first_token(S, monkeypatch):
     add_model(S, "m", default=1)
     chunks = _sse({"choices": [{"delta": {"content": "迟到的字"}}]})
     _patch_http(monkeypatch, lambda request: httpx.Response(200, stream=SlowStream(chunks, first_delay=5)))
-    client = ai_client.AiClient(S())
+    ac = ai_client.AiClient(S())
     cancel_at = time.time() + 0.6
 
     def cancel_check():
         if time.time() > cancel_at:
             raise ts.TaskCancelled()
-    client.cancel_check = cancel_check
+    ac.cancel_check = cancel_check
     started = time.time()
     with pytest.raises(ts.TaskCancelled):
-        client.chat_stream([{"role": "user", "content": "u"}], {"task_type": "continue_chapter"})
+        ac.chat_stream([{"role": "user", "content": "u"}], {"task_type": "continue_chapter"})
     assert time.time() - started < 2.5, "首字前也能在 1 秒左右取消"
     assert S().query(AiLog).one().error_message == "已取消"
 
@@ -323,7 +323,7 @@ def test_ai_log_records_params_input_output_reasoning(S, monkeypatch):
     assert b.input_text == "[user]\n第一问\n\n[assistant]\n答\n\n[user]\n第二问", "system 单独记在 prompt，不重复记"
 
 
-def test_ai_logs_search_and_detail(S, client):
+def test_ai_logs_search_and_detail(S, client):  # noqa: F811
     db = S()
     db.add_all([
         AiLog(novel_id=3, task_type="continue_chapter", status="success", prompt="p", input_text="大纲：樟木箱子",

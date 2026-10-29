@@ -61,8 +61,9 @@ def recent_chapters_text(db: Session, novel: Novel, before_no: int | None = None
     chapters = published_chapters(db, novel, before_no).limit(n).all()[::-1]
     if not chapters:
         return "（暂无正文）"
-    parts = [f"第{c.chapter_no}章 {c.title}\n\n{c.content}" for c in chapters]
-    return "\n\n---\n\n".join(parts)
+    # 章与章之间用标题隔开，不用 "---"：模型会照着在正文里写分隔线
+    parts = [f"〔第{c.chapter_no}章 {c.title}〕\n{c.content}" for c in chapters]
+    return "\n\n".join(parts)
 
 
 def outline_target(novel: Novel, chapter_no: int) -> str:
@@ -162,6 +163,8 @@ def build_chapter_context(
     term_rows = story_bible.relevant_terms(db, novel, chapter_no, hint)
     profile_n, term_n = len(profile_rows), len(term_rows)
     dead_rows = story_bible.dead_profiles(db, novel.id, chapter_no)
+    from app.services import style
+    style_text = style.style_hints(db, novel, chapter_no) if get_config_int(db, "style_hints_enabled", 1) > 0 else ""
 
     def assemble() -> str:
         sections = [
@@ -183,6 +186,8 @@ def build_chapter_context(
         if retrieved_text:
             sections.append(("【相关历史章节（检索召回）】", retrieved_text))
         sections.append(("【最近章节正文】", recent_chapters_text(db, novel, chapter_no, recent_n)))
+        if style_text:
+            sections.append(("【文风提醒】（根据最近几章自动统计）", style_text))
         sections.append(("【本章大纲】", fixed["outline"]))
         parts = [f"{label}\n{content}" for label, content in sections]
         if fixed["instruction"]:
