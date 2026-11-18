@@ -34,14 +34,22 @@ def ideas(page: int = Query(1), page_size: int = Query(10),
     return ok({"list": [f_idea(i) for i in rows], "total": total, "page": page, "page_size": page_size})
 
 
+IDEA_MODES = ("refine", "explore")
+
+
 @router.post("/ideas")
 def idea_store(payload: dict, db: Session = Depends(get_db)):
+    mode = str(payload.get("mode") or "refine")
+    if mode not in IDEA_MODES:
+        mode = "refine"
     title = str(payload.get("title") or "").strip()
     if not title:
-        return fail("点子标题不能为空")
+        if mode != "explore":
+            return fail("点子标题不能为空")
+        title = "随便聊聊 · " + now().strftime("%m-%d %H:%M")  # 还没有点子时不用先起标题
     i = Idea(
-        category_id=int(payload.get("category_id") or 0) or None, title=title,
-        content=str(payload.get("content") or "").strip(), status="unused",
+        category_id=int(payload.get("category_id") or 0) or None, title=title[:255],
+        content=str(payload.get("content") or "").strip(), status="unused", mode=mode,
         created_at=now(), updated_at=now(),
     )
     db.add(i)
@@ -60,6 +68,8 @@ def idea_update(iid: int, payload: dict, db: Session = Depends(get_db)):
         i.content = str(payload.get("content"))
     if payload.get("category_id") is not None:
         i.category_id = int(payload.get("category_id")) or None
+    if payload.get("mode") in IDEA_MODES:
+        i.mode = payload["mode"]
     i.updated_at = now()
     db.commit()
     return ok(f_idea(i), "已保存")
@@ -136,7 +146,10 @@ def idea_chat(iid: int, payload: dict, db: Session = Depends(get_db)):
                 background += f"题材方向：{category}。"
             if (idea_row.content or "").strip():
                 background += f"\n当前已记录的点子草稿：{idea_row.content}"
-            msgs.insert(0, {"role": "system", "content": prompt_service.render(db2, "idea_chat") + "\n\n" + background})
+            prompt_type = "idea_explore" if idea_row.mode == "explore" else "idea_chat"
+            if idea_row.mode == "explore":
+                background = "作者还没有明确的点子，想先随便聊聊。" + (f"大致方向：{category}。" if category else "")
+            msgs.insert(0, {"role": "system", "content": prompt_service.render(db2, prompt_type) + "\n\n" + background})
             return msgs
         finally:
             db2.close()
@@ -209,6 +222,62 @@ def idea_chat(iid: int, payload: dict, db: Session = Depends(get_db)):
 def _open_db():
     from app.db import SessionLocal
     return SessionLocal()
+
+
+@router.get("/ideas/{iid}")
+def idea_show(iid: int, db: Session = Depends(get_db)):
+    i = db.query(Idea).filter(Idea.id == iid).first()
+    if not i:
+        return fail("点子不存在")
+    return ok(f_idea(i))
+
+
+EXTRACT_SYSTEM = (
+    "你是一位小说策划编辑。下面是作者和 AI 随便聊小说点子的记录。请把讨论里出现过、值得写的小说点子提炼出来。\n"
+    "要求：\n"
+    "- 只提炼讨论里真的出现过的方向，作者表现出兴趣、追问过、补充过的优先；不要自己编新的\n"
+    "- 1~5 个，按作者的兴趣从高到低排\n"
+    "- 讨论里作者补充过的细节、改过的地方要写进去，以作者的说法为准\n"
+    "- 每个点子：title 不超过 20 字；content 150~300 字，写清核心创意、主角和处境、好玩在哪、大概怎么往下走\n"
+    "只输出 JSON：{\"ideas\": [{\"title\": \"\", \"content\": \"\"}]}"
+)
+
+
+@router.post("/ideas/{iid}/extract")
+def idea_extract(iid: int, db: Session = Depends(get_db)):
+    """从「随便聊聊」的讨论里提炼出几个点子（只返回，不保存；作者挑了再用 POST /ideas 存）"""
+    from app.services import budget
+    from app.services.ai_client import AiClient
+    from app.services.ai_service import extract_json
+
+    idea = db.query(Idea).filter(Idea.id == iid).first()
+    if not idea:
+        return fail("点子不存在")
+    chats = db.query(IdeaChat).filter(IdeaChat.idea_id == iid).order_by(IdeaChat.id).all()
+    if not chats:
+        return fail("还没有聊天内容")
+    try:
+        budget.ensure(db)
+    except Exception as e:  # noqa: BLE001  超出每日费用上限
+        return fail(str(e))
+    transcript = "\n".join(("作者：" if c.role == "user" else "AI：") + c.content for c in chats)
+    if len(transcript) > 30000:
+        transcript = transcript[:5000] + "\n……（中间讨论省略）……\n" + transcript[-25000:]
+    try:
+        result = AiClient(db).chat(
+            [{"role": "system", "content": EXTRACT_SYSTEM}, {"role": "user", "content": f"讨论记录：\n{transcript}"}],
+            {"task_type": "idea_extract", "max_tokens": 4096},
+        )
+    except Exception as e:  # noqa: BLE001
+        return fail(f"提炼失败：{e}")
+    data = extract_json(result["text"])
+    items = []
+    for it in data.get("ideas") or [] if isinstance(data, dict) else []:
+        if isinstance(it, dict) and str(it.get("title") or "").strip() and str(it.get("content") or "").strip():
+            items.append({"title": str(it["title"]).strip()[:60], "content": str(it["content"]).strip()})
+    if not items:
+        return fail("没能从讨论里提炼出点子，再多聊几句试试")
+    return ok({"ideas": items[:5]})
 
 
 @router.post("/ideas/{iid}/save")

@@ -97,6 +97,8 @@ export interface Idea {
   title: string
   content: string
   status: IdeaStatus
+  /** refine 打磨点子 / explore 随便聊聊 */
+  mode?: 'refine' | 'explore'
   category_name?: string
   created_at: string
   updated_at: string
@@ -161,6 +163,7 @@ export interface UsageStats {
 
 export type PromptType =
   | 'idea_chat'
+  | 'idea_explore'
   | 'novel_setting'
   | 'outline'
   | 'chapter_generate'

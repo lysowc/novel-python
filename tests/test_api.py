@@ -288,3 +288,46 @@ def test_idea_chat_stream(S, client, monkeypatch):
     assert "".join(e["content"] for e in events if e["type"] == "delta") == "你好呀"
     assert events[-1]["type"] == "done"
     assert [c.role for c in S().query(IdeaChat).order_by(IdeaChat.id)] == ["user", "assistant"]
+
+
+def test_idea_explore_mode_prompt_and_extract(S, client, monkeypatch):
+    from app.services import prompt_service
+    seen = {}
+    monkeypatch.setattr(prompt_service, "render", lambda db, key, variables=None: f"PROMPT[{key}]")
+
+    class FakeChat:
+        def __init__(self, db, novel_id=0):
+            pass
+
+        def chat_stream(self, messages, options, on_delta=None, on_stage=None):
+            seen["system"] = messages[0]["content"]
+            on_delta("给你几个脑洞")
+            return {"text": "给你几个脑洞"}
+
+        def chat(self, messages, options):
+            seen["extract_input"] = messages[-1]["content"]
+            return {"text": json.dumps({"ideas": [
+                {"title": "怂熊守关", "content": "一头怕挨打的守关熊……"},
+                {"title": "言出法随", "content": "说什么都按字面成真的青年……"},
+                {"title": "", "content": "没标题的不要"}]}, ensure_ascii=False)}
+    monkeypatch.setattr(ai_client, "AiClient", FakeChat)
+
+    r = client.post("/api/admin/ideas", json={"mode": "explore"}).json()
+    assert r["code"] == 0 and r["data"]["mode"] == "explore" and r["data"]["title"].startswith("随便聊聊")
+    assert client.post("/api/admin/ideas", json={"title": ""}).json()["code"] != 0, "打磨模式还是要标题"
+    iid = r["data"]["id"]
+    assert client.get(f"/api/admin/ideas/{iid}").json()["data"]["mode"] == "explore"
+
+    with client.stream("POST", f"/api/admin/ideas/{iid}/chat", json={"message": "没想法，随便聊聊"}) as resp:
+        list(resp.iter_lines())
+    assert "PROMPT[idea_explore]" in seen["system"] and "还没有明确的点子" in seen["system"]
+
+    assert client.post(f"/api/admin/ideas/{iid}/extract").json()["data"]["ideas"] == [
+        {"title": "怂熊守关", "content": "一头怕挨打的守关熊……"},
+        {"title": "言出法随", "content": "说什么都按字面成真的青年……"}]
+    assert "作者：没想法，随便聊聊" in seen["extract_input"]
+
+    client.put(f"/api/admin/ideas/{iid}", json={"mode": "refine"})
+    with client.stream("POST", f"/api/admin/ideas/{iid}/chat", json={"message": "就写熊吧"}) as resp:
+        list(resp.iter_lines())
+    assert "PROMPT[idea_chat]" in seen["system"], "切回打磨点子用原来的提示词"

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Lightbulb, MessageSquare, Plus, Trash2, LoaderCircle } from '@lucide/vue'
+import { Lightbulb, MessageSquare, MessagesSquare, Plus, Trash2, LoaderCircle } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 import PageHeader from '@/components/common/PageHeader.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
@@ -73,6 +73,20 @@ async function onCreate() {
   }
 }
 
+// 随便聊聊：还没有点子时不用先起标题，直接开聊
+const exploring = ref(false)
+async function startExplore() {
+  exploring.value = true
+  try {
+    const idea = await createIdea({ mode: 'explore' })
+    router.push(`/admin/ideas/${idea.id}/chat`)
+  } catch {
+    // 请求层已提示
+  } finally {
+    exploring.value = false
+  }
+}
+
 async function confirmDelete() {
   if (!deleting.value) return
   deleteLoading.value = true
@@ -98,6 +112,10 @@ onMounted(async () => {
   <div>
     <PageHeader title="AI 点子" description="收集灵感，与 AI 讨论完善，一键孵化成小说">
       <template #actions>
+        <Button variant="outline" class="gap-1.5" :disabled="exploring" @click="startExplore">
+          <MessagesSquare class="size-4" />
+          随便聊聊
+        </Button>
         <Button @click="createOpen = true">
           <Plus class="size-4" />
           新建点子
@@ -136,9 +154,14 @@ onMounted(async () => {
         title="还没有点子"
         description="灵光一现？记下来，让 AI 帮你展开"
       >
-        <Button size="sm" @click="createOpen = true">
-          <Plus class="size-4" /> 新建点子
-        </Button>
+        <div class="flex gap-2">
+          <Button size="sm" variant="outline" :disabled="exploring" @click="startExplore">
+            <MessagesSquare class="size-4" /> 没想法？随便聊聊
+          </Button>
+          <Button size="sm" @click="createOpen = true">
+            <Plus class="size-4" /> 新建点子
+          </Button>
+        </div>
       </EmptyState>
     </div>
 
@@ -157,6 +180,7 @@ onMounted(async () => {
             <div class="min-w-0">
               <p class="truncate text-sm font-semibold">{{ idea.title }}</p>
               <p class="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span v-if="idea.mode === 'explore'" class="rounded-full border px-1.5 py-px">随便聊聊</span>
                 <span class="rounded-full bg-accent px-1.5 py-px text-accent-foreground">{{ idea.category_name || '未分类' }}</span>
                 <span>{{ formatRelative(idea.created_at) }}</span>
               </p>
@@ -170,7 +194,7 @@ onMounted(async () => {
           </span>
         </div>
         <p class="mt-3 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-          {{ idea.content || '暂无内容，点击进入聊天完善' }}
+          {{ idea.content || (idea.mode === 'explore' ? '还在聊，聊出方向后可以提炼成点子' : '暂无内容，点击进入聊天完善') }}
         </p>
         <div class="mt-3 flex items-center justify-between border-t pt-2.5" @click.stop>
           <Button variant="ghost" size="sm" class="gap-1.5 text-primary" @click="openChat(idea)">

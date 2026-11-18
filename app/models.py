@@ -152,6 +152,7 @@ class Idea(Base):
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default="unused")
+    mode = Column(String(16), nullable=False, default="refine")  # refine 打磨点子 / explore 随便聊聊
     novel_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)

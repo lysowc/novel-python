@@ -293,6 +293,15 @@ export function deleteIdea(id: number | string) {
   return http.del<void>(`/admin/ideas/${id}`)
 }
 
+export function fetchIdea(id: number | string) {
+  return http.get<Idea>(`/admin/ideas/${id}`)
+}
+
+/** 从「随便聊聊」的讨论里提炼几个点子（只返回，不保存） */
+export function extractIdeas(id: number | string) {
+  return http.post<{ ideas: { title: string; content: string }[] }>(`/admin/ideas/${id}/extract`)
+}
+
 export function fetchIdeaMessages(id: number | string) {
   if (USE_MOCK) return mockApi.ideaMessages(Number(id))
   return http.get<IdeaMessage[]>(`/admin/ideas/${id}/messages`)
