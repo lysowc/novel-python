@@ -76,6 +76,7 @@ class NovelSetting(Base):
     conflicts = Column(Text, nullable=True)
     main_plot = Column(Text, nullable=True)
     style = Column(Text, nullable=True)
+    style_sample = Column(Text, nullable=True)  # 文风样章：只在写正文时带入，不在 FIELD_LABELS 里（不进摘要/记忆等上下文）
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 

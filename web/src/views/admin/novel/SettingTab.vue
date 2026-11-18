@@ -21,6 +21,7 @@ const form = ref({
   conflicts: '',
   main_plot: '',
   style: '',
+  style_sample: '',
 })
 
 const fields = [
@@ -45,6 +46,7 @@ async function load() {
       conflicts: s.conflicts || '',
       main_plot: s.main_plot || '',
       style: s.style || '',
+      style_sample: s.style_sample || '',
     }
   } finally {
     loading.value = false
@@ -95,6 +97,22 @@ onMounted(load)
           :placeholder="f.placeholder"
           class="resize-y font-mono text-xs leading-relaxed"
         />
+      </div>
+      <div class="space-y-1.5 rounded-xl border border-dashed p-4">
+        <Label>文风样章</Label>
+        <p class="text-xs text-muted-foreground">
+          贴一段你喜欢的文字（500～1500 字，自己写的或喜欢的作者的都行）。AI 写正文时会学它的语气、节奏和用词，不会照抄内容。
+          只对这本书生效；留空就按默认文风写。
+        </p>
+        <Textarea
+          v-model="form.style_sample"
+          :rows="8"
+          placeholder="例如：黑三的绩效已经连续四个季度垫底。不是它不努力。是它太怂了……"
+          class="resize-y text-sm leading-relaxed"
+        />
+        <p class="text-right text-xs" :class="form.style_sample.length > 3000 ? 'text-destructive' : 'text-muted-foreground'">
+          {{ form.style_sample.length }} 字{{ form.style_sample.length > 3000 ? '（超过 3000 字的部分不会带给 AI）' : '' }}
+        </p>
       </div>
       <div class="flex justify-end">
         <Button class="gap-2" :disabled="saving" @click="save">

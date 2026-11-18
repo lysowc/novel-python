@@ -402,3 +402,18 @@ def test_style_hints_in_chapter_context_and_no_dash_separator(S, fake_ai):
     _config(S, style_hints_enabled=0)
     run_task(S, "continue_chapter", 1)
     assert "【文风提醒】" not in FakeClient.contexts[4]
+
+
+def test_style_sample_only_in_chapter_context(S, fake_ai, client):  # noqa: F811
+    from conftest import FakeClient
+    make_novel(S, 1)
+    r = client.put("/api/admin/novels/1/setting", json={"style": "冷幽默", "style_sample": "黑三的绩效已经连续四个季度垫底。"})
+    assert r.json()["data"]["style_sample"] == "黑三的绩效已经连续四个季度垫底。"
+    assert client.get("/api/admin/novels/1/setting").json()["data"]["style_sample"].startswith("黑三")
+    run_task(S, "continue_chapter", 1)
+    ctx = FakeClient.contexts[1]
+    assert "【文风样章】" in ctx and "黑三的绩效" in ctx
+    assert "黑三的绩效" not in FakeClient.memory_inputs[1], "样章只给写正文用，不进记忆等其他任务"
+    # 只改别的字段时样章不被清掉
+    client.put("/api/admin/novels/1/setting", json={"style": "改了"})
+    assert client.get("/api/admin/novels/1/setting").json()["data"]["style_sample"].startswith("黑三")

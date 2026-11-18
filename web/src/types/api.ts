@@ -252,6 +252,8 @@ export interface NovelSetting {
   conflicts: string
   main_plot: string
   style: string
+  /** 文风样章：写正文时让 AI 模仿语气和节奏 */
+  style_sample?: string
 }
 
 // Outline 是 novel 上的 JSON 字符串

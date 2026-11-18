@@ -258,6 +258,16 @@ def novel_chapter_store(nid: int, payload: dict, db: Session = Depends(get_db)):
     return ok(f_chapter(c), "章节已添加")
 
 
+SETTING_FIELDS = ("world_view", "characters", "factions", "conflicts", "main_plot", "style", "style_sample")
+
+
+def _f_setting(setting: NovelSetting) -> dict:
+    data = {"id": setting.id, "novel_id": setting.novel_id}
+    data.update({f: getattr(setting, f) or "" for f in SETTING_FIELDS})
+    data.update({"created_at": dt_str(setting.created_at), "updated_at": dt_str(setting.updated_at)})
+    return data
+
+
 @router.get("/novels/{nid}/setting")
 @router.put("/novels/{nid}/setting")
 def novel_setting(nid: int, payload: dict | None = None, request: Request = None,
@@ -270,28 +280,15 @@ def novel_setting(nid: int, payload: dict | None = None, request: Request = None
         if not setting:
             setting = NovelSetting(novel_id=nid, created_at=now())
             db.add(setting)
-        for field in ("world_view", "characters", "factions", "conflicts", "main_plot", "style"):
+        for field in SETTING_FIELDS:
             if payload.get(field) is not None:
                 setattr(setting, field, str(payload.get(field)))
         setting.updated_at = now()
         db.commit()
-        return ok({
-            "id": setting.id, "novel_id": setting.novel_id,
-            "world_view": setting.world_view, "characters": setting.characters,
-            "factions": setting.factions, "conflicts": setting.conflicts,
-            "main_plot": setting.main_plot, "style": setting.style,
-            "created_at": dt_str(setting.created_at), "updated_at": dt_str(setting.updated_at),
-        }, "设定已保存")
+        return ok(_f_setting(setting), "设定已保存")
     if setting:
-        return ok({
-            "id": setting.id, "novel_id": setting.novel_id,
-            "world_view": setting.world_view, "characters": setting.characters,
-            "factions": setting.factions, "conflicts": setting.conflicts,
-            "main_plot": setting.main_plot, "style": setting.style,
-            "created_at": dt_str(setting.created_at), "updated_at": dt_str(setting.updated_at),
-        })
-    return ok({"novel_id": nid, "world_view": "", "characters": "", "factions": "",
-               "conflicts": "", "main_plot": "", "style": ""})
+        return ok(_f_setting(setting))
+    return ok({"novel_id": nid, **{f: "" for f in SETTING_FIELDS}})
 
 
 @router.get("/novels/{nid}/memory")

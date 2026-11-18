@@ -126,6 +126,9 @@ def context_budget(db: Session, output_tokens: int = 0) -> int:
     return budget
 
 
+STYLE_SAMPLE_CHARS = 3000  # 样章最多带这么多字
+
+
 def chapter_hint(db: Session, novel: Novel, chapter_no: int, instruction: str = "") -> str:
     """本章可能涉及什么：本章大纲 + 附加要求 + 上一章结尾。用来挑选相关的人物档案、名词、伏笔和设定"""
     last = published_chapters(db, novel, chapter_no).first()
@@ -164,6 +167,9 @@ def build_chapter_context(
     profile_n, term_n = len(profile_rows), len(term_rows)
     dead_rows = story_bible.dead_profiles(db, novel.id, chapter_no)
     from app.services import style
+    from app.models import NovelSetting
+    setting_row = db.query(NovelSetting).filter(NovelSetting.novel_id == novel.id).first()
+    style_sample = ((setting_row.style_sample if setting_row else "") or "").strip()[:STYLE_SAMPLE_CHARS]
     style_text = style.style_hints(db, novel, chapter_no) if get_config_int(db, "style_hints_enabled", 1) > 0 else ""
 
     def assemble() -> str:
@@ -186,6 +192,9 @@ def build_chapter_context(
         if retrieved_text:
             sections.append(("【相关历史章节（检索召回）】", retrieved_text))
         sections.append(("【最近章节正文】", recent_chapters_text(db, novel, chapter_no, recent_n)))
+        if style_sample:
+            sections.append(("【文风样章】（学它的语气、节奏、用词和叙述方式；不要照抄内容、人物和情节，"
+                             "也不要搬用它的题材和笑点）", style_sample))
         if style_text:
             sections.append(("【文风提醒】（根据最近几章自动统计）", style_text))
         sections.append(("【本章大纲】", fixed["outline"]))
