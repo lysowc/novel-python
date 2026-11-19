@@ -491,3 +491,24 @@ def test_outline_sync_respects_locked_and_pulls_back(S, fake_ai):
     system = [c for c in FakeClient.calls if c[0] == "outline_sync"][-1][1]
     assert "拉回主线" in system and "【锁定】" in system
     assert "第3章 t3：原大纲3【锁定】" in FakeClient.outline_inputs[1]
+
+
+def test_chapter_context_shows_upcoming_outline_as_reserved(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1, outline=_outline(6))
+    run_task(S, "continue_chapter", 1)
+    ctx = FakeClient.contexts[1]
+    up = ctx.split("【后面几章的安排】")[1]
+    assert "本章不要提前写" in up
+    assert "第2章 原标题2：原大纲2" in up and "第4章 原标题4：原大纲4" in up and "第5章" not in up
+    assert ctx.index("【本章大纲】") < ctx.index("【后面几章的安排】")
+    assert "第1章 原标题1" not in up
+    # 大纲最后一章：后面没有安排就不加这一段
+    db = S()
+    from app.models import Novel
+    from app.services import context_builder
+    assert "【后面几章的安排】" not in context_builder.build_chapter_context(db, db.get(Novel, 1), 6, "", [], "记忆")
+    db.close()
+    _config(S, outline_lookahead=0)
+    run_task(S, "continue_chapter", 1)
+    assert "【后面几章的安排】" not in FakeClient.contexts[2]

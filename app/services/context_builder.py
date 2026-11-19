@@ -81,6 +81,19 @@ def outline_target(novel: Novel, chapter_no: int) -> str:
     return f"第{chapter_no}章（大纲未覆盖此章，请根据剧情走向自由创作，并自拟合适的情节）"
 
 
+def upcoming_outline(novel: Novel, chapter_no: int, n: int = 3) -> str:
+    """本章之后 n 章的大纲：给 AI 看清楚哪些情节是留给后面的，免得一章写掉好几章的内容"""
+    if n <= 0:
+        return ""
+    rows = []
+    for volume in novel.get_outline_array().get("volumes", []):
+        for chapter in volume.get("chapters", []) or []:
+            no = int(chapter.get("no") or 0) if isinstance(chapter, dict) else 0
+            if chapter_no < no <= chapter_no + n:
+                rows.append((no, f"第{no}章 {chapter.get('title', '')}：{chapter.get('summary', '')}"))
+    return "\n".join(text for _, text in sorted(rows))
+
+
 def outline_max_no(novel: Novel) -> int:
     """大纲规划到的最大章号（0 = 还没有大纲）"""
     nos = [int(c.get("no") or 0) for v in novel.get_outline_array().get("volumes", [])
@@ -170,6 +183,7 @@ def build_chapter_context(
     term_rows = story_bible.relevant_terms(db, novel, chapter_no, hint)
     profile_n, term_n = len(profile_rows), len(term_rows)
     dead_rows = story_bible.dead_profiles(db, novel.id, chapter_no)
+    upcoming = upcoming_outline(novel, chapter_no, get_config_int(db, "outline_lookahead", 3))
     from app.services import style
     from app.models import NovelSetting
     setting_row = db.query(NovelSetting).filter(NovelSetting.novel_id == novel.id).first()
@@ -202,6 +216,9 @@ def build_chapter_context(
         if style_text:
             sections.append(("【文风提醒】（根据最近几章自动统计）", style_text))
         sections.append(("【本章大纲】", fixed["outline"]))
+        if upcoming:
+            sections.append(("【后面几章的安排】（这些情节留给后面的章节写：本章不要提前写，写到本章目标完成就收尾，"
+                             "结尾可以为下一章铺垫，但不要把下一章的事做完）", upcoming))
         parts = [f"{label}\n{content}" for label, content in sections]
         if fixed["instruction"]:
             parts.append("【用户附加要求】\n" + fixed["instruction"])
