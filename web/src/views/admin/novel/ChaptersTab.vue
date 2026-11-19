@@ -17,7 +17,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  cancelTask, createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchOutlineStatus, fetchTasks,
+  batchDeleteChapters, cancelTask, createChapter, deleteChapter, fetchAdminChapters, fetchChapter, fetchOutlineStatus, fetchTasks,
   publishChapters, retryTask, updateChapter,
 } from '@/api'
 import { countWords, formatNumber, formatRelative } from '@/lib/format'
@@ -263,12 +263,51 @@ async function saveChapter() {
   }
 }
 
+// ---------- 多选删除 ----------
+const selected = ref<number[]>([])
+const batchDeleteOpen = ref(false)
+const batchDeleting = ref(false)
+const allSelected = computed(() => chapters.value.length > 0 && selected.value.length === chapters.value.length)
+function toggleAll() {
+  selected.value = allSelected.value ? [] : chapters.value.map((c) => c.id)
+}
+function toggleOne(id: number) {
+  selected.value = selected.value.includes(id) ? selected.value.filter((x) => x !== id) : [...selected.value, id]
+}
+const selectedNos = computed(() =>
+  chapters.value.filter((c) => selected.value.includes(c.id)).map((c) => c.chapter_no).sort((a, b) => a - b),
+)
+const outlineHintOpen = ref(false)
+
+async function confirmBatchDelete() {
+  batchDeleting.value = true
+  try {
+    const res = await batchDeleteChapters(props.novelId, selected.value)
+    toast.success(deleteMessage(res))
+    batchDeleteOpen.value = false
+    selected.value = []
+    if (res.all_deleted) outlineHintOpen.value = true
+    load()
+  } catch {
+    // 请求层已提示
+  } finally {
+    batchDeleting.value = false
+  }
+}
+
+function deleteMessage(r: { deleted: number; all_deleted: boolean; memory_rolled_back_to: number | null; rebuild_from: number }) {
+  if (r.all_deleted) return `已删除 ${r.deleted} 章，记忆和资料库里 AI 建的条目已一起清空`
+  if (r.memory_rolled_back_to) return `已删除 ${r.deleted} 章，记忆和资料库已退回到第 ${r.memory_rolled_back_to} 章结束时`
+  if (r.rebuild_from) return `已删除 ${r.deleted} 章。删的是中间章节，建议到「记忆」页从第 ${r.rebuild_from} 章重建记忆`
+  return `已删除 ${r.deleted} 章`
+}
+
 async function confirmDelete() {
   if (!deleting.value) return
   deleteLoading.value = true
   try {
-    await deleteChapter(deleting.value.id)
-    toast.success('章节已删除')
+    const res = await deleteChapter(deleting.value.id)
+    toast.success(res ? deleteMessage(res) : '章节已删除')
     deleting.value = null
     load()
   } catch {
@@ -376,6 +415,17 @@ onBeforeUnmount(stopPolling)
         <Button v-if="drafts.length" variant="outline" class="gap-2" :disabled="publishing" @click="publish()">
           <Send class="size-4" />
           发布全部草稿（{{ drafts.length }}）
+        </Button>
+        <Button
+          v-if="selected.length"
+          variant="destructive"
+          class="gap-2"
+          :disabled="!!runningTask"
+          :title="runningTask ? '有任务在跑，等它结束再删' : ''"
+          @click="batchDeleteOpen = true"
+        >
+          <Trash2 class="size-4" />
+          删除选中（{{ selected.length }}）
         </Button>
         <Button variant="ghost" class="gap-2 text-muted-foreground" title="找回删除的章节" @click="openDeleted">
           <ArchiveRestore class="size-4" />
@@ -505,6 +555,16 @@ onBeforeUnmount(stopPolling)
       <Table>
         <TableHeader>
           <TableRow class="hover:bg-transparent">
+            <TableHead class="w-10">
+              <input
+                type="checkbox"
+                class="size-4 align-middle accent-foreground"
+                title="全选"
+                :checked="allSelected"
+                :indeterminate="selected.length > 0 && !allSelected"
+                @change="toggleAll"
+              />
+            </TableHead>
             <TableHead class="w-16">章号</TableHead>
             <TableHead>标题</TableHead>
             <TableHead class="hidden sm:table-cell">字数</TableHead>
@@ -514,7 +574,15 @@ onBeforeUnmount(stopPolling)
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow v-for="c in chapters" :key="c.id" class="group">
+          <TableRow v-for="c in chapters" :key="c.id" class="group" :class="selected.includes(c.id) ? 'bg-muted/50' : ''">
+            <TableCell>
+              <input
+                type="checkbox"
+                class="size-4 align-middle accent-foreground"
+                :checked="selected.includes(c.id)"
+                @change="toggleOne(c.id)"
+              />
+            </TableCell>
             <TableCell class="font-medium">{{ c.chapter_no }}</TableCell>
             <TableCell>
               <p class="line-clamp-1 font-medium">
@@ -630,6 +698,28 @@ onBeforeUnmount(stopPolling)
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <!-- 多选删除确认 -->
+    <ConfirmDialog
+      :open="batchDeleteOpen"
+      :title="`删除选中的 ${selected.length} 章？`"
+      :description="`第 ${selectedNos.join('、')} 章。删掉的章节可在「已删除」里找回。删的是最后几章时，记忆和资料库会自动退回到剩下最后一章结束时；全部删光则一起清空（锁定的档案和名词保留）。`"
+      confirm-text="删除"
+      :loading="batchDeleting"
+      @update:open="(v: boolean) => (batchDeleteOpen = v)"
+      @confirm="confirmBatchDelete"
+    />
+
+    <!-- 全部删光后提示重新生成大纲 -->
+    <ConfirmDialog
+      :open="outlineHintOpen"
+      title="章节已全部删除"
+      description="写这些章节时，「大纲校准」可能已经按它们改过后面的大纲。如果要从头重写，建议到「大纲」页点「AI 生成大纲」重新生成一份干净的。"
+      confirm-text="知道了"
+      cancel-text="关闭"
+      @update:open="(v: boolean) => (outlineHintOpen = v)"
+      @confirm="outlineHintOpen = false"
+    />
 
     <!-- 删除确认 -->
     <ConfirmDialog

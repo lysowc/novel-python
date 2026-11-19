@@ -224,7 +224,7 @@ export function fetchDeletedChapters(novelId: number | string) {
 
 export function deleteChapter(id: number | string) {
   if (USE_MOCK) return mockApi.deleteChapter(Number(id))
-  return http.del<void>(`/admin/chapters/${id}`)
+  return http.del<ChapterDeleteResult | null>(`/admin/chapters/${id}`)
 }
 
 // ============ 设定 / 大纲 / 记忆 ============
@@ -527,4 +527,34 @@ export function deleteTerm(id: number) {
 
 export function updateArc(id: number, body: { content: string }) {
   return http.put<ArcSummary>(`/admin/arcs/${id}`, body)
+}
+
+// ============ 批量删除 / 清空 ============
+
+export interface ChapterDeleteResult {
+  deleted: number
+  remaining: number
+  memory_rolled_back_to: number | null
+  rebuild_from: number
+  all_deleted: boolean
+}
+
+export function batchDeleteChapters(novelId: number | string, ids: number[]) {
+  return http.post<ChapterDeleteResult>(`/admin/novels/${novelId}/chapters/batch-delete`, { ids })
+}
+
+export function clearNovelMemory(novelId: number | string) {
+  return http.post<null>(`/admin/novels/${novelId}/memory/clear`)
+}
+
+export function batchDeleteProfiles(novelId: number | string, ids: number[]) {
+  return http.post<{ deleted: number }>(`/admin/novels/${novelId}/profiles/batch-delete`, { ids })
+}
+
+export function batchDeleteTerms(novelId: number | string, ids: number[]) {
+  return http.post<{ deleted: number }>(`/admin/novels/${novelId}/terms/batch-delete`, { ids })
+}
+
+export function clearAiBible(novelId: number | string, target: 'profiles' | 'terms' | 'all') {
+  return http.post<{ profiles: number; terms: number }>(`/admin/novels/${novelId}/bible/clear-ai`, { target })
 }

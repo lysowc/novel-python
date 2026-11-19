@@ -1,9 +1,9 @@
 """长篇资料库：记忆增量补丁、人物档案/境界历史、名词表、分段总结、重复检测"""
 import json
 
-from app.models import AiTask, ArcSummary, CharacterProfile, NovelMemory, StoryTerm, SystemConfig
+from app.models import AiTask, ArcSummary, Chapter, CharacterProfile, Novel, NovelMemory, StoryTerm, SystemConfig
 from app.services import memory as mem
-from app.services import story_bible
+from app.services import memory_store, story_bible
 from conftest import current_plot, make_novel, run_task
 from test_api import client  # noqa: F401  复用登录好的 TestClient
 
@@ -563,3 +563,79 @@ def test_json_mode_for_json_tasks_on_deepseek(S):
     assert "response_format" not in payload(ds, "continue_chapter"), "正文不是 JSON"
     assert "response_format" not in payload(ds, "arc_summary")
     assert "response_format" not in payload(other, "generate_outline"), "非 DeepSeek 不传"
+
+
+# ---------- 多选删除章节 + 自动善后；清空记忆；资料库批量删除 ----------
+
+def _three_chapters(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1)
+    FakeClient.patches[1] = {"profiles": [{"name": "沈渡", "role": "主角", "status": "在世"}]}
+    FakeClient.patches[3] = {"profiles": [{"name": "第三章新人", "status": "在世"}],
+                             "terms": [{"term": "第三章地名", "type": "地名"}]}
+    for _ in range(3):
+        run_task(S, "continue_chapter", 1)
+    db = S()
+    ids = {c.chapter_no: c.id for c in db.query(Chapter).filter_by(novel_id=1)}
+    db.close()
+    return ids
+
+
+def test_batch_delete_tail_rolls_back_memory_and_bible(S, fake_ai, client):  # noqa: F811
+    ids = _three_chapters(S, fake_ai)
+    db = S()
+    snap2 = memory_store.get_snapshot(db, 1, 2).content
+    db.close()
+    r = client.post("/api/admin/novels/1/chapters/batch-delete", json={"ids": [ids[3]]}).json()
+    assert r["code"] == 0 and r["data"]["memory_rolled_back_to"] == 2 and "退回到第 2 章" in r["msg"]
+    db = S()
+    assert db.query(NovelMemory).filter_by(novel_id=1).one().content == snap2, "记忆退回第 2 章结束时"
+    assert memory_store.get_snapshot(db, 1, 3) is None
+    names = {p.name for p in story_bible.profiles(db, 1)}
+    assert "第三章新人" not in names and "沈渡" in names
+    assert not story_bible.terms(db, 1)
+    assert db.query(Chapter).filter_by(novel_id=1).count() == 2
+    db.close()
+
+
+def test_batch_delete_all_clears_memory_keeps_locked(S, fake_ai, client):  # noqa: F811
+    ids = _three_chapters(S, fake_ai)
+    db = S()
+    p = [x for x in story_bible.profiles(db, 1) if x.name == "沈渡"][0]
+    p.locked = 1
+    db.commit()
+    db.close()
+    r = client.post("/api/admin/novels/1/chapters/batch-delete", json={"ids": list(ids.values())}).json()
+    assert r["data"]["all_deleted"] and "一起清空" in r["msg"]
+    db = S()
+    assert db.query(NovelMemory).filter_by(novel_id=1).first() is None
+    assert [x.name for x in story_bible.profiles(db, 1)] == ["沈渡"], "锁定的档案保留"
+    assert db.get(Novel, 1).chapter_count == 0
+    db.close()
+    # 删掉的章节能在「已删除」里找回
+    assert len(client.get("/api/admin/novels/1/deleted-chapters").json()["data"]) >= 3
+
+
+def test_delete_middle_chapter_suggests_rebuild(S, fake_ai, client):  # noqa: F811
+    ids = _three_chapters(S, fake_ai)
+    r = client.post("/api/admin/novels/1/chapters/batch-delete", json={"ids": [ids[2]]}).json()
+    assert r["data"]["rebuild_from"] == 2 and "从第 2 章重建" in r["msg"]
+    # 单章删除接口也走同一套善后
+    r = client.delete(f"/api/admin/chapters/{ids[3]}").json()
+    assert r["data"]["memory_rolled_back_to"] == 1
+
+
+def test_clear_memory_and_bible_batch(S, fake_ai, client):  # noqa: F811
+    _three_chapters(S, fake_ai)
+    assert client.post("/api/admin/novels/1/memory/clear").json()["code"] == 0
+    db = S()
+    assert db.query(NovelMemory).filter_by(novel_id=1).first() is None and memory_store.get_snapshot(db, 1, 1) is None
+    pid = [x.id for x in story_bible.profiles(db, 1) if x.name == "第三章新人"][0]
+    db.close()
+    r = client.post("/api/admin/novels/1/profiles/batch-delete", json={"ids": [pid, 99999]}).json()
+    assert r["data"]["deleted"] == 1
+    client.post("/api/admin/novels/1/terms", json={"term": "手建", "type": "地名"})  # 手动建的默认锁定
+    r = client.post("/api/admin/novels/1/bible/clear-ai", json={"target": "all"}).json()
+    db = S()
+    assert [t.term for t in story_bible.terms(db, 1)] == ["手建"] and not story_bible.profiles(db, 1)
+    db.close()

@@ -11,6 +11,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import {
+  batchDeleteProfiles, batchDeleteTerms, clearAiBible,
   createProfile, createTerm, deleteProfile, deleteTerm, fetchBible, updateArc, updateProfile, updateTerm,
 } from '@/api'
 import type { ArcSummary, CharacterProfile, StoryBible, StoryTerm } from '@/types/api'
@@ -166,6 +167,61 @@ async function confirmDelete() {
   }
 }
 
+// ---------- 多选删除 / 清空 AI 建的 ----------
+const pickedProfiles = ref<number[]>([])
+const pickedTerms = ref<number[]>([])
+function togglePick(kind: 'profiles' | 'terms', id: number) {
+  const list = kind === 'profiles' ? pickedProfiles : pickedTerms
+  list.value = list.value.includes(id) ? list.value.filter((x) => x !== id) : [...list.value, id]
+}
+const allProfilesPicked = computed(() => profiles.value.length > 0 && profiles.value.every((p) => pickedProfiles.value.includes(p.id)))
+const allTermsPicked = computed(() => terms.value.length > 0 && terms.value.every((t) => pickedTerms.value.includes(t.id)))
+function pickAllProfiles() {
+  pickedProfiles.value = allProfilesPicked.value ? [] : profiles.value.map((p) => p.id)
+}
+function pickAllTerms() {
+  pickedTerms.value = allTermsPicked.value ? [] : terms.value.map((t) => t.id)
+}
+
+const bulk = ref<{ kind: 'profiles' | 'terms' | 'clear-profiles' | 'clear-terms'; title: string; desc: string } | null>(null)
+const bulkRunning = ref(false)
+function askBulk(kind: 'profiles' | 'terms' | 'clear-profiles' | 'clear-terms') {
+  const map = {
+    profiles: { title: `删除选中的 ${pickedProfiles.value.length} 个人物档案？`, desc: '删除后无法恢复。没锁定的人物之后出场时，AI 可能会重新建档。' },
+    terms: { title: `删除选中的 ${pickedTerms.value.length} 个名词？`, desc: '删除后无法恢复。' },
+    'clear-profiles': { title: '清空 AI 建的人物档案？', desc: '所有没锁定的人物档案都会删除，锁定的（包括你手动建的）保留。删除后无法恢复。' },
+    'clear-terms': { title: '清空 AI 建的名词？', desc: '所有没锁定的名词都会删除，锁定的（包括你手动建的）保留。删除后无法恢复。' },
+  }
+  bulk.value = { kind, ...map[kind] }
+}
+async function runBulk() {
+  if (!bulk.value) return
+  bulkRunning.value = true
+  try {
+    const k = bulk.value.kind
+    if (k === 'profiles') {
+      const r = await batchDeleteProfiles(props.novelId, pickedProfiles.value)
+      toast.success(`已删除 ${r.deleted} 个人物档案`)
+      pickedProfiles.value = []
+    } else if (k === 'terms') {
+      const r = await batchDeleteTerms(props.novelId, pickedTerms.value)
+      toast.success(`已删除 ${r.deleted} 个名词`)
+      pickedTerms.value = []
+    } else {
+      const r = await clearAiBible(props.novelId, k === 'clear-profiles' ? 'profiles' : 'terms')
+      toast.success(k === 'clear-profiles' ? `已清空 ${r.profiles} 个 AI 建的档案` : `已清空 ${r.terms} 个 AI 建的名词`)
+      if (k === 'clear-profiles') pickedProfiles.value = []
+      else pickedTerms.value = []
+    }
+    bulk.value = null
+    load()
+  } catch {
+    // 请求层已提示
+  } finally {
+    bulkRunning.value = false
+  }
+}
+
 // ---------- 分段总结 ----------
 const arcEditing = ref<number | null>(null)
 const arcDraft = ref('')
@@ -241,6 +297,18 @@ function onArcDone() {
           <Plus class="size-4" /> 新建档案
         </Button>
       </div>
+      <div v-if="profiles.length" class="flex flex-wrap items-center gap-2 text-sm">
+        <label class="flex items-center gap-2 text-muted-foreground">
+          <input type="checkbox" class="size-4 accent-foreground" :checked="allProfilesPicked" @change="pickAllProfiles" />
+          全选
+        </label>
+        <Button v-if="pickedProfiles.length" size="sm" variant="destructive" class="h-8 gap-1.5" @click="askBulk('profiles')">
+          <Trash2 class="size-3.5" /> 删除选中（{{ pickedProfiles.length }}）
+        </Button>
+        <Button size="sm" variant="ghost" class="ml-auto h-8 text-muted-foreground" @click="askBulk('clear-profiles')">
+          清空 AI 建的档案
+        </Button>
+      </div>
 
       <p v-if="!bible.profiles.length" class="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
         还没有人物档案。写完新章节后 AI 会自动建档；已有章节可以到「记忆」页「从第 1 章重建记忆」一次性补出来。
@@ -250,6 +318,12 @@ function onArcDone() {
       <div class="grid gap-3 md:grid-cols-2">
         <article v-for="p in profiles" :key="p.id" class="flex flex-col rounded-2xl border bg-card p-4 shadow-sm">
           <header class="flex items-start gap-2">
+            <input
+              type="checkbox"
+              class="mt-1.5 size-4 shrink-0 accent-foreground"
+              :checked="pickedProfiles.includes(p.id)"
+              @change="togglePick('profiles', p.id)"
+            />
             <div class="min-w-0 flex-1">
               <h3 class="flex flex-wrap items-baseline gap-x-2 font-semibold">
                 {{ p.name }}
@@ -311,12 +385,30 @@ function onArcDone() {
           <Plus class="size-4" /> 新建名词
         </Button>
       </div>
+      <div v-if="terms.length" class="flex flex-wrap items-center gap-2 text-sm">
+        <label class="flex items-center gap-2 text-muted-foreground">
+          <input type="checkbox" class="size-4 accent-foreground" :checked="allTermsPicked" @change="pickAllTerms" />
+          全选
+        </label>
+        <Button v-if="pickedTerms.length" size="sm" variant="destructive" class="h-8 gap-1.5" @click="askBulk('terms')">
+          <Trash2 class="size-3.5" /> 删除选中（{{ pickedTerms.length }}）
+        </Button>
+        <Button size="sm" variant="ghost" class="ml-auto h-8 text-muted-foreground" @click="askBulk('clear-terms')">
+          清空 AI 建的名词
+        </Button>
+      </div>
       <p v-if="!bible.terms.length" class="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
         还没有名词。地名、功法、物品、势力等专有名词会在写章节时由 AI 自动收录，统一写法。
       </p>
       <p v-else-if="!terms.length" class="py-6 text-center text-sm text-muted-foreground">没有匹配的名词</p>
       <div v-if="terms.length" class="divide-y rounded-2xl border bg-card shadow-sm">
         <div v-for="t in terms" :key="t.id" class="flex items-start gap-3 px-4 py-3">
+          <input
+            type="checkbox"
+            class="mt-1 size-4 shrink-0 accent-foreground"
+            :checked="pickedTerms.includes(t.id)"
+            @change="togglePick('terms', t.id)"
+          />
           <div class="min-w-0 flex-1">
             <p class="flex flex-wrap items-baseline gap-x-2 text-sm font-medium">
               {{ t.term }}
@@ -507,6 +599,16 @@ function onArcDone() {
       :loading="deleting"
       @update:open="(v: boolean) => { if (!v) pendingDelete = null }"
       @confirm="confirmDelete"
+    />
+
+    <ConfirmDialog
+      :open="!!bulk"
+      :title="bulk?.title ?? ''"
+      :description="bulk?.desc ?? ''"
+      confirm-text="删除"
+      :loading="bulkRunning"
+      @update:open="(v: boolean) => { if (!v) bulk = null }"
+      @confirm="runBulk"
     />
 
     <StreamDialog

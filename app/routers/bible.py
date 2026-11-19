@@ -191,3 +191,40 @@ def arc_update(aid: int, payload: dict = Body(...), db: Session = Depends(get_db
     a.updated_at = now()
     db.commit()
     return ok(f_arc(a))
+
+
+def _ids(payload: dict) -> list[int]:
+    return [int(i) for i in (payload or {}).get("ids") or [] if str(i).isdigit()]
+
+
+@router.post("/novels/{nid}/profiles/batch-delete")
+def profiles_batch_delete(nid: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    ids = _ids(payload)
+    n = db.query(CharacterProfile).filter(CharacterProfile.novel_id == nid, CharacterProfile.id.in_(ids)) \
+        .delete(synchronize_session=False) if ids else 0
+    db.commit()
+    return ok({"deleted": n}, f"已删除 {n} 个人物档案")
+
+
+@router.post("/novels/{nid}/terms/batch-delete")
+def terms_batch_delete(nid: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    ids = _ids(payload)
+    n = db.query(StoryTerm).filter(StoryTerm.novel_id == nid, StoryTerm.id.in_(ids)) \
+        .delete(synchronize_session=False) if ids else 0
+    db.commit()
+    return ok({"deleted": n}, f"已删除 {n} 个名词")
+
+
+@router.post("/novels/{nid}/bible/clear-ai")
+def bible_clear_ai(nid: int, payload: dict = Body(default={}), db: Session = Depends(get_db)):
+    """清空 AI 建的档案 / 名词（作者锁定的保留）"""
+    target = str((payload or {}).get("target") or "all")
+    counts = {"profiles": 0, "terms": 0}
+    if target in ("profiles", "all"):
+        counts["profiles"] = db.query(CharacterProfile).filter(
+            CharacterProfile.novel_id == nid, CharacterProfile.locked == 0).delete(synchronize_session=False)
+    if target in ("terms", "all"):
+        counts["terms"] = db.query(StoryTerm).filter(
+            StoryTerm.novel_id == nid, StoryTerm.locked == 0).delete(synchronize_session=False)
+    db.commit()
+    return ok(counts, f"已清空 {counts['profiles']} 个档案、{counts['terms']} 个名词（锁定的保留）")

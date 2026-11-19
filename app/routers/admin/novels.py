@@ -12,7 +12,7 @@ from app.models import (
     Novel, NovelAutomation, NovelMemory, NovelSetting, CHAPTER_WRITTEN_STATUSES,
 )
 from app.config import settings
-from app.services import chapter_versions, context_builder, memory_store, novel_trash, task_service
+from app.services import chapter_cleanup, chapter_versions, context_builder, memory_store, novel_trash, task_service
 from app.routers.admin.formatters import f_novel, f_chapter, f_chapter_full, f_task
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -420,12 +420,39 @@ def chapter_destroy(cid: int, db: Session = Depends(get_db)):
     c = db.query(Chapter).filter(Chapter.id == cid).first()
     if not c:
         return fail("章节不存在")
-    novel_id = c.novel_id
-    chapter_versions.save_version(db, c, "delete")  # 可在「已删除章节」里恢复
-    memory_store.delete_snapshots(db, novel_id, c.chapter_no)
-    db.delete(c)
-    db.commit()
-    n = db.query(Novel).filter(Novel.id == novel_id).first()
-    if n:
-        _recount_novel(db, n)
-    return ok(None, "已删除")
+    n = db.query(Novel).filter(Novel.id == c.novel_id).first()
+    result = chapter_cleanup.delete_chapters(db, n, [c])
+    return ok(result, _delete_message(result))
+
+
+@router.post("/novels/{nid}/chapters/batch-delete")
+def chapters_batch_delete(nid: int, payload: dict, db: Session = Depends(get_db)):
+    """多选删除章节，删完自动善后（记忆回退、资料库撤回）"""
+    n = db.query(Novel).filter(Novel.id == nid).first()
+    if not n:
+        return fail("小说不存在")
+    ids = [int(i) for i in payload.get("ids") or [] if str(i).isdigit()]
+    chapters = db.query(Chapter).filter(Chapter.novel_id == nid, Chapter.id.in_(ids)).all() if ids else []
+    if not chapters:
+        return fail("没有选中章节")
+    result = chapter_cleanup.delete_chapters(db, n, chapters)
+    return ok(result, _delete_message(result))
+
+
+def _delete_message(r: dict) -> str:
+    msg = f"已删除 {r['deleted']} 章，可在「已删除」里找回"
+    if r.get("all_deleted"):
+        msg += "；记忆和资料库里 AI 建的条目已一起清空"
+    elif r.get("memory_rolled_back_to"):
+        msg += f"；记忆和资料库已退回到第 {r['memory_rolled_back_to']} 章结束时"
+    elif r.get("rebuild_from"):
+        msg += f"；删的是中间章节，后面章节的记忆还含被删内容，可在记忆页从第 {r['rebuild_from']} 章重建"
+    return msg
+
+
+@router.post("/novels/{nid}/memory/clear")
+def novel_memory_clear(nid: int, db: Session = Depends(get_db)):
+    if not db.query(Novel).filter(Novel.id == nid).first():
+        return fail("小说不存在")
+    chapter_cleanup.clear_memory(db, nid)
+    return ok(None, "记忆已清空")

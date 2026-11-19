@@ -2,7 +2,7 @@
 import { Button } from '@/components/ui/button'
 
 import { computed, onMounted, ref } from 'vue'
-import { Braces, Flag, History, ListTree, Network, Save, Sparkles } from '@lucide/vue'
+import { Braces, Eraser, Flag, History, ListTree, Network, Save, Sparkles } from '@lucide/vue'
 import RelationGraph from '@/components/admin/RelationGraph.vue'
 import ForeshadowOverview from '@/components/admin/ForeshadowOverview.vue'
 import { Input } from '@/components/ui/input'
@@ -10,7 +10,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import StreamDialog from '@/components/common/StreamDialog.vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
-import { fetchNovelMemory, fetchOutlineStatus, saveNovelMemory } from '@/api'
+import { clearNovelMemory, fetchNovelMemory, fetchOutlineStatus, saveNovelMemory } from '@/api'
 import { usePollingTask } from '@/composables/useAiTask'
 import type { Memory, StructuredMemory } from '@/types/api'
 
@@ -92,6 +92,23 @@ const writtenMax = ref(0)
 fetchOutlineStatus(props.novelId).then((o) => (writtenMax.value = o.written_max)).catch(() => {})
 
 // 从第 N 章起重建记忆（重写中间章节后让后续记忆跟上；旧小说从第 1 章完整重建）
+// 清空记忆（连同每章的记忆快照）
+const clearOpen = ref(false)
+const clearing = ref(false)
+async function confirmClear() {
+  clearing.value = true
+  try {
+    await clearNovelMemory(props.novelId)
+    toast.success('记忆已清空')
+    clearOpen.value = false
+    load()
+  } catch {
+    // 请求层已提示
+  } finally {
+    clearing.value = false
+  }
+}
+
 const rebuildFrom = ref(1)
 const rebuildConfirm = ref(false)
 const rebuildOpen = ref(false)
@@ -169,7 +186,20 @@ onMounted(load)
       <span class="basis-full text-xs text-muted-foreground sm:basis-auto">
         重写中间章节后用它让后续记忆跟上；每章一次 AI 调用
       </span>
+      <Button size="sm" variant="ghost" class="ml-auto gap-1.5 text-destructive" :disabled="running" @click="clearOpen = true">
+        <Eraser class="size-4" /> 清空记忆
+      </Button>
     </div>
+
+    <ConfirmDialog
+      :open="clearOpen"
+      title="清空记忆？"
+      description="全书记忆和每一章的记忆快照都会删掉，无法恢复。之后写新章节会从零开始记。如果只是删了最后几章，不用清空：在章节页删除时记忆会自动退回。"
+      confirm-text="清空"
+      :loading="clearing"
+      @update:open="(v: boolean) => (clearOpen = v)"
+      @confirm="confirmClear"
+    />
 
     <ConfirmDialog
       :open="rebuildConfirm"
