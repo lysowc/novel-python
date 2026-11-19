@@ -513,3 +513,25 @@ def test_chapter_context_shows_upcoming_outline_as_reserved(S, fake_ai):
     _config(S, outline_lookahead=0)
     run_task(S, "continue_chapter", 1)
     assert "【后面几章的安排】" not in FakeClient.contexts[2]
+
+
+def test_chapter_context_labels_decisions_as_whole_book_not_this_chapter(S, fake_ai):
+    from conftest import FakeClient
+    from app.models import NovelSetting
+    make_novel(S, 1, outline=_outline(6))
+    db = S()
+    db.add(NovelSetting(novel_id=1, decisions="- 妈把姑娘微信要过来\n- 两人结成同盟", world_view="w", characters="c",
+                        main_plot="m"))
+    db.commit()
+    db.close()
+    run_task(S, "continue_chapter", 1)
+    ctx = FakeClient.contexts[1]
+    assert "【全书要点（" in ctx and "不是本章的任务清单" in ctx and "妈把姑娘微信要过来" in ctx
+    assert "作者已经拍板，必须遵守" not in ctx
+    assert "本章只写到这个目标完成为止" in ctx
+    # 大纲、校准等其他任务仍按「必须遵守」给
+    db = S()
+    from app.models import Novel
+    from app.services import context_builder
+    assert "作者已经拍板，必须遵守" in context_builder.setting_text(db.get(Novel, 1))
+    db.close()

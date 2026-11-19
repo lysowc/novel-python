@@ -9,12 +9,13 @@ from app.services import memory as memory_service
 from app.services.retrieval import get_config_int
 
 
-def setting_text(novel: Novel) -> str:
+def setting_text(novel: Novel, for_chapter: bool = False) -> str:
+    """for_chapter=True：写正文用，作者要点换成「全书要点、按大纲节奏写到」的说法"""
     setting = novel.setting
     if not setting or setting.is_empty():
         description = (novel.description or "").strip()
         return f"【小说简介】{description}\n（其余设定尚未生成）"
-    text = setting.to_context_text()
+    text = setting.to_context_text(for_chapter)
     if not (setting.world_view or setting.characters or setting.main_plot):
         # 只有作者要点、其余设定还没生成：把简介也带上
         text = f"【小说简介】{(novel.description or '').strip()}\n\n" + text
@@ -77,7 +78,8 @@ def outline_target(novel: Novel, chapter_no: int) -> str:
             if int(chapter.get("no") or 0) == chapter_no:
                 return (f"第{chapter_no}章 {chapter.get('title', '')}\n本章目标：{chapter.get('summary', '')}\n"
                         "（本章目标里的关键情节——谁死谁活、证据和物品落到谁手里、谁和谁结盟或反目——必须写到，"
-                        "不要改成相反的结果；细节和过程可以自由发挥）")
+                        "不要改成相反的结果；细节和过程可以自由发挥。本章只写到这个目标完成为止，"
+                        "写不满字数就把这一场写细、写足，不要靠往后推进剧情凑字数；后面的情节哪怕已经知道也不要提前写）")
     return f"第{chapter_no}章（大纲未覆盖此章，请根据剧情走向自由创作，并自拟合适的情节）"
 
 
@@ -164,7 +166,7 @@ def build_chapter_context(
 
     budget = context_budget(db, output_tokens)
     fixed = {
-        "setting": setting_text(novel),
+        "setting": setting_text(novel, for_chapter=True),
         "memory": memory if memory is not None else memory_text(novel),
         "outline": outline_target(novel, chapter_no),
         "instruction": instruction.strip(),
