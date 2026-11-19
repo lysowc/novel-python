@@ -115,11 +115,30 @@ def extract_json(text: str) -> dict:
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return {}
+    raw = text[start:end + 1]
     try:
-        data = json.loads(text[start:end + 1])
+        data = json.loads(raw)
     except ValueError:
-        return {}
+        data = _repair_json(raw)
     return data if isinstance(data, dict) else {}
+
+
+def _repair_json(raw: str):
+    """模型偶尔多写一个逗号或括号（如 `},},`、`[1,2,]`），JSON 就整份解析失败。按报错位置逐个修正，修不好返回 None"""
+    text = raw
+    for _ in range(50):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            pos = e.pos
+            prev = len(text[:pos].rstrip()) - 1
+            if e.msg.startswith(("Expecting value", "Expecting property name")) and prev >= 0 and text[prev] == ",":
+                text = text[:prev] + text[prev + 1:]          # 多余的逗号：[1,2,] / {"a":1,}
+            elif e.msg.startswith("Expecting ',' delimiter") and pos < len(text) and text[pos] in "}]":
+                text = text[:pos] + text[pos + 1:]            # 多余的括号：},}
+            else:
+                return None
+    return None
 
 
 class AiService:

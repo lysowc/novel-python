@@ -104,6 +104,11 @@ REASONING_VALUES = ("none", "low", "high", "max")
 REVIEW_TASK_TYPES = {"consistency_check", "outline_sync", "idea_extract", "idea_decisions"}  # 需要一点推理：找矛盾、调整后续大纲
 
 
+# 要求返回 JSON 的任务：DeepSeek 打开 JSON 输出模式（response_format=json_object），保证返回合法 JSON
+JSON_TASK_TYPES = {"generate_outline", "extend_outline", "update_memory", "outline_sync", "consistency_check",
+                   "idea_decisions", "idea_extract", "idea_save"}
+
+
 def reasoning_level(db: Session, task_type: str) -> str:
     """本次调用的思考强度；空字符串 = 不传参数（用模型默认，设置里填 off）"""
     if task_type in REVIEW_TASK_TYPES:
@@ -262,8 +267,10 @@ class AiClient:
         """把本次的思考强度写进 options（_reasoning），后面算 max_tokens 和组请求体都看它"""
         if "_reasoning" in options:
             return options
-        level = reasoning_level(self.db, task_type) if supports_reasoning_effort(provider, model) else ""
-        return {**options, "_reasoning": level}
+        deepseek = supports_reasoning_effort(provider, model)
+        level = reasoning_level(self.db, task_type) if deepseek else ""
+        use_json = options.get("_json", deepseek and task_type in JSON_TASK_TYPES)
+        return {**options, "_reasoning": level, "_json": use_json}
 
     def _build_payload(self, messages: list[dict], model: AiModel, options: dict, stream: bool) -> dict:
         temperature = options.get("temperature")
@@ -288,6 +295,8 @@ class AiClient:
         }
         payload["max_tokens"] = output_limit(model, options)
         # DeepSeek 思考模式（文档 guides/thinking_mode）：thinking.type 开关；开启时 reasoning_effort 定强度
+        if options.get("_json"):
+            payload["response_format"] = {"type": "json_object"}
         level = options.get("_reasoning")
         if level == "none":
             payload["thinking"] = {"type": "disabled"}
@@ -337,6 +346,8 @@ class AiClient:
                 return self.chat(messages, {**options, "_no_headroom": True})
             if _reasoning_rejected(resp.status_code, str(err)) and options.get("_reasoning"):
                 return self.chat(messages, {**options, "_reasoning": ""})
+            if resp.status_code in (400, 422) and options.get("_json") and "response_format" in str(err).lower():
+                return self.chat(messages, {**options, "_json": False})
             log_call(self.db, task_type, provider, model, {}, duration, "failed", str(err), prompt, self.novel_id, trace)
             raise _http_error(resp.status_code, str(err))
 
@@ -443,6 +454,8 @@ class AiClient:
                         return self.chat_stream(messages, {**options, "_no_headroom": True}, on_delta, on_stage)
                     if _reasoning_rejected(status_code, err) and options.get("_reasoning"):
                         return self.chat_stream(messages, {**options, "_reasoning": ""}, on_delta, on_stage)
+                    if status_code in (400, 422) and options.get("_json") and "response_format" in str(err).lower():
+                        return self.chat_stream(messages, {**options, "_json": False}, on_delta, on_stage)
                     if status_code in (400, 422) and "stream_options" in payload:
                         # 服务不支持 stream_options：去掉后重试一次
                         return self.chat_stream(messages, {**options, "include_usage": False}, on_delta, on_stage)

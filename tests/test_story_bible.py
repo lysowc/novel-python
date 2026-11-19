@@ -535,3 +535,31 @@ def test_chapter_context_labels_decisions_as_whole_book_not_this_chapter(S, fake
     from app.services import context_builder
     assert "作者已经拍板，必须遵守" in context_builder.setting_text(db.get(Novel, 1))
     db.close()
+
+
+def test_extract_json_repairs_stray_brace_and_trailing_comma():
+    from app.services.ai_service import extract_json
+    broken = '{"volumes":[{"chapters":[{"no":35,"t":"a"},},{"no":36,"t":"b"},]}]}'
+    data = extract_json(broken)
+    assert [c["no"] for c in data["volumes"][0]["chapters"]] == [35, 36]
+    assert extract_json('```json\n{"a": [1, 2,], "b": {"c": 1,},}\n```') == {"a": [1, 2], "b": {"c": 1}}
+    assert extract_json("完全不是 JSON") == {}
+
+
+def test_json_mode_for_json_tasks_on_deepseek(S):
+    from app.models import AiModel, AiProvider
+    from app.services.ai_client import AiClient
+    ds = AiProvider(name="ds", base_url="https://api.deepseek.com", api_key="")
+    other = AiProvider(name="o", base_url="https://api.example.com/v1", api_key="")
+    m = AiModel(provider_id=1, name="deepseek-flash", max_tokens=393216)
+    c = AiClient(S())
+
+    def payload(provider, task_type):
+        opts = c._reasoning_options(provider, m if provider is ds else AiModel(provider_id=2, name="gpt-x"),
+                                    task_type, {"task_type": task_type, "max_tokens": 1000})
+        return c._build_payload([{"role": "user", "content": "x"}], m, opts, stream=False)
+    assert payload(ds, "generate_outline")["response_format"] == {"type": "json_object"}
+    assert payload(ds, "update_memory")["response_format"] == {"type": "json_object"}
+    assert "response_format" not in payload(ds, "continue_chapter"), "正文不是 JSON"
+    assert "response_format" not in payload(ds, "arc_summary")
+    assert "response_format" not in payload(other, "generate_outline"), "非 DeepSeek 不传"
