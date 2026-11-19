@@ -94,6 +94,17 @@ OUTLINE_SYNC_SYSTEM = (
 )
 OUTLINE_SYNC_WINDOW = 8  # 每次最多调整后面这么多章的大纲
 
+PACING_LOOKAHEAD = 20  # 节奏检查对照本章之后多少章的大纲
+PACING_SYSTEM = (
+    "你是长篇小说的责任编辑，专门把关节奏。给你本章大纲、后面若干章的大纲和本章正文，"
+    "判断正文有没有把属于后面章节的关键情节提前写了。\n"
+    "算抢写：后面某章大纲里的关键节点在本章正文里已经真的发生、完成或揭晓了，"
+    "比如人物第一次见面或第一次搭上线、拿到或交出关键东西、结盟或翻脸、身份或秘密被揭穿、某个计划已经实施、"
+    "某个账号/群/组织已经出现并在运作。\n"
+    "不算抢写：本章大纲本身要求的内容；只是提到、计划、猜测、担心，或者为后面埋的伏笔；后面大纲里没有的新细节。\n"
+    "只输出 JSON：{\"ahead\": [{\"chapter\": 后面的章号, \"what\": \"正文提前写了什么，一句话\"}]}，没有抢写给空数组"
+)
+
 
 
 def parse_sections(text: str) -> dict:
@@ -495,9 +506,11 @@ class AiService:
         previous = self.db.query(Chapter.content).filter(
             Chapter.novel_id == novel.id, Chapter.chapter_no == chapter_no - 1).scalar() or ""
 
+        pacing = int(float(config_value(self.db, "pacing_check_enabled", 1))) > 0
+
         user = user_context
-        best: tuple[str, list[str]] | None = None
-        attempts = 2 if enabled else 1
+        best: tuple[str, list[str], list[str]] | None = None  # (正文, 质量问题, 抢写的情节)
+        attempts = 2 if (enabled or pacing) else 1
         for attempt in range(1, attempts + 1):
             result = self.client.chat_stream(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -505,26 +518,77 @@ class AiService:
                 on_delta, on_stage,
             )
             content = (result.get("text") or "").strip()
-            if not enabled:
+            if not enabled and not pacing:
                 return content, []
-            issues = quality.check(content, target_words, previous, result.get("finish_reason", ""), min_ratio) \
-                if content else ["AI 返回内容为空"]
-            if best is None or quality.score(issues, content) > quality.score(best[1], best[0]):
-                best = (content, issues)
-            if not issues or attempt == attempts:
+            issues = (quality.check(content, target_words, previous, result.get("finish_reason", ""), min_ratio)
+                      if content else ["AI 返回内容为空"]) if enabled else ([] if content else ["AI 返回内容为空"])
+            ahead = self._pacing_check(novel, chapter_no, content, on_stage) if pacing and content else []
+            # 挑保留哪一版：抢写少的优先，其次质量问题少、字数多
+            rank = (-len(ahead), quality.score(issues, content))
+            if best is None or rank > (-len(best[2]), quality.score(best[1], best[0])):
+                best = (content, issues, ahead)
+            if (not issues and not ahead) or attempt == attempts:
                 break
-            on_stage and on_stage("quality_retry", "质量检查未通过：" + "；".join(issues) + "，自动重写一次...")
+            reasons = []
+            if ahead:
+                reasons.append("写超了：" + "；".join(ahead))
+                on_stage and on_stage("pacing_retry", "节奏检查：本章写到了后面章节的情节（" + "；".join(ahead)
+                                      + "），自动重写一次...")
+            if issues:
+                on_stage and on_stage("quality_retry", "质量检查未通过：" + "；".join(issues) + "，自动重写一次...")
             on_stage and on_stage("reset_output", "")
-            user = (user_context + "\n\n【上一次生成的问题】\n" + "\n".join(f"- {i}" for i in issues)
-                    + "\n请避免以上问题，完整写完本章。")
-        content, issues = best
+            feedback = ["【上一稿的问题，这一稿必须改掉】"]
+            if ahead:
+                feedback.append("- 上一稿写超了，下面这些情节属于后面的章节，这一稿一律不写、不提前揭晓，"
+                                "也不要拿它们当结尾钩子：")
+                feedback += [f"  · {a}" for a in ahead]
+                feedback.append("- 这一稿只写【本章大纲】里的事，写到本章目标完成就收尾；字数不够就把本章的场面写细写足")
+            feedback += [f"- {i}" for i in issues]
+            user = user_context + "\n\n" + "\n".join(feedback)
+        content, issues, ahead = best
         if not content:
             raise RuntimeError("AI 返回内容为空")
+        if ahead:
+            issues = issues + ["节奏：自动重写后仍写到了后面章节的情节（" + "；".join(ahead) + "），已保留写超较少的一版"]
         if content != (result.get("text") or "").strip():
             # 保留的是第一版：让进度框重新显示它
             on_stage and on_stage("reset_output", "")
             on_delta and on_delta(content)
         return content, issues
+
+    def _pacing_check(self, novel: Novel, chapter_no: int, content: str, on_stage=None) -> list[str]:
+        """本章正文有没有写到后面章节的关键情节。返回抢写的情节（「第N章：……」），检查不了或没抢写返回空"""
+        entries = [c for v in novel.get_outline_array().get("volumes", []) for c in (v.get("chapters") or [])
+                   if isinstance(c, dict)]
+        later = [c for c in entries if chapter_no < int(c.get("no") or 0) <= chapter_no + PACING_LOOKAHEAD]
+        if not later:
+            return []
+        on_stage and on_stage("pacing_check", "正在检查本章节奏，看有没有提前写到后面章节的情节...")
+        user = (
+            "【本章大纲】\n" + context_builder.outline_target(novel, chapter_no).split("\n（")[0]
+            + "\n\n【后面章节的大纲】\n"
+            + "\n".join(f"第{c.get('no')}章 {c.get('title', '')}：{c.get('summary', '')}" for c in later)
+            + "\n\n【本章正文】\n" + content
+        )
+        try:
+            result = self.client.chat(
+                [{"role": "system", "content": PACING_SYSTEM}, {"role": "user", "content": user}],
+                {"task_type": "pacing_check", "max_tokens": 2048},
+            )
+        except CallbackAbort:
+            raise
+        except Exception as e:  # noqa: BLE001  检查失败不挡住写章节
+            on_stage and on_stage("pacing_check_failed", f"节奏检查失败（不影响本章）：{e}")
+            return []
+        items = []
+        for it in extract_json(result["text"]).get("ahead") or []:
+            if not isinstance(it, dict):
+                continue
+            what = str(it.get("what") or "").strip()
+            no = it.get("chapter")
+            if what and str(no).isdigit() and int(no) > chapter_no:
+                items.append(f"第{int(no)}章：{what}")
+        return items[:8]
 
     def _maybe_extend_outline(self, novel: Novel, chapter_no: int, on_stage=None) -> None:
         automation = self.db.query(NovelAutomation).filter(NovelAutomation.novel_id == novel.id).first()

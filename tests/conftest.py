@@ -74,6 +74,7 @@ class FakeClient:
     arc_calls: list = []
     outline_sync: dict = {}   # 章号 → 大纲校准返回的 JSON
     calls: list = []          # (task_type, system, user) 记录非流式调用
+    pacing: list = []         # 节奏检查依次返回的结果（dict），用完后默认没抢写
     outline_inputs: dict = {}
 
     def __init__(self, db=None, novel_id=0):
@@ -99,6 +100,9 @@ class FakeClient:
             raise RuntimeError("AI 请求失败: timeout")
         user = messages[-1]["content"]
         FakeClient.calls.append((kind, messages[0]["content"], user))
+        if kind == "pacing_check":
+            data = FakeClient.pacing.pop(0) if FakeClient.pacing else {"ahead": []}
+            return {"text": json.dumps(data, ensure_ascii=False)}
         if kind == "idea_decisions":
             return {"text": json.dumps({"decisions": ["开场用男主第一人称自我介绍", "不要电梯搭讪"]}, ensure_ascii=False)}
         if kind == "generate_summary":
@@ -145,6 +149,7 @@ def fake_ai(monkeypatch):
     FakeClient.arc_calls = []
     FakeClient.outline_sync = {}
     FakeClient.calls = []
+    FakeClient.pacing = []
     FakeClient.outline_inputs = {}
     monkeypatch.setattr(ai_service, "AiClient", FakeClient)
     return FakeClient

@@ -639,3 +639,51 @@ def test_clear_memory_and_bible_batch(S, fake_ai, client):  # noqa: F811
     db = S()
     assert [t.term for t in story_bible.terms(db, 1)] == ["手建"] and not story_bible.profiles(db, 1)
     db.close()
+
+
+# ---------- 节奏检查：抢写了自动重写一次 ----------
+
+def test_pacing_check_rewrites_when_ahead(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1, outline=_outline(20))
+    FakeClient.stream_texts = ["第一稿：妈开了短视频账号，还拉了群", "第二稿：只写放狠话被晾"]
+    FakeClient.pacing = [{"ahead": [{"chapter": 12, "what": "妈的短视频账号已经在运作"},
+                                    {"chapter": 15, "what": "已经拉了拆台群"},
+                                    {"chapter": 1, "what": "本章的不算"}]},
+                         {"ahead": []}]
+    task = run_task(S, "generate_chapter", 1, chapter_no=1)
+    db = S()
+    assert db.query(Chapter).filter_by(novel_id=1, chapter_no=1).one().content == "第二稿：只写放狠话被晾"
+    db.close()
+    assert not (task.params or {}).get("quality_warning")
+    pacing_calls = [c for c in FakeClient.calls if c[0] == "pacing_check"]
+    assert len(pacing_calls) == 2 and "第2章 原标题2：原大纲2" in pacing_calls[0][2] and "第20章" in pacing_calls[0][2]
+    assert "第一稿：妈开了短视频账号" in pacing_calls[0][2]
+    second_ctx = FakeClient.contexts[1]  # 第二次生成时的上下文带着上一稿的问题
+    assert "第12章：妈的短视频账号已经在运作" in second_ctx and "第15章：已经拉了拆台群" in second_ctx
+    assert "本章的不算" not in second_ctx and "一律不写" in second_ctx
+
+
+def test_pacing_keeps_less_ahead_version_and_warns(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1, outline=_outline(20))
+    FakeClient.stream_texts = ["第一稿", "第二稿"]
+    FakeClient.pacing = [{"ahead": [{"chapter": 5, "what": "A"}]},
+                         {"ahead": [{"chapter": 5, "what": "A"}, {"chapter": 6, "what": "B"}]}]
+    task = run_task(S, "generate_chapter", 1, chapter_no=1)
+    db = S()
+    assert db.query(Chapter).filter_by(novel_id=1, chapter_no=1).one().content == "第一稿", "保留写超较少的一版"
+    db.close()
+    assert "节奏" in task.params["quality_warning"] and "第5章：A" in task.params["quality_warning"]
+
+
+def test_pacing_check_off_or_no_outline(S, fake_ai):
+    from conftest import FakeClient
+    make_novel(S, 1)  # 没有大纲：不检查
+    run_task(S, "continue_chapter", 1)
+    assert not [c for c in FakeClient.calls if c[0] == "pacing_check"]
+    make_novel(S, 2, outline=_outline(20))
+    _config(S, pacing_check_enabled=0)
+    FakeClient.pacing = [{"ahead": [{"chapter": 5, "what": "A"}]}]
+    run_task(S, "continue_chapter", 2)
+    assert not [c for c in FakeClient.calls if c[0] == "pacing_check"]
