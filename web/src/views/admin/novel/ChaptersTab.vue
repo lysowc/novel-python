@@ -312,8 +312,7 @@ function aiParams() {
   const p: Record<string, unknown> = {}
   // continue_chapter 总是"在最大章号之后续写下一章"，不能传章号（传了会覆盖最后一章）
   if (aiTask.value?.no && aiTask.value.type !== 'continue_chapter') p.chapter_no = aiTask.value.no
-  if (aiTask.value?.type === 'generate_chapter') p.target_words = 3000
-  if (aiTask.value?.type === 'continue_chapter') p.target_words = 3000
+  // 不传 target_words：由后台按「系统设置 → 章节目标字数」决定（以前这里写死 3000，覆盖了系统设置）
   if (aiTask.value?.remaining) p.remaining = aiTask.value.remaining
   return p
 }
