@@ -29,7 +29,7 @@ const groups: { title: string; fields: Field[] }[] = [
   {
     title: '章节生成',
     fields: [
-      { key: 'chapter_target_words', label: '章节目标字数', type: 'number', placeholder: '3000', hint: 'AI 生成章节的默认目标字数', step: 1 },
+      { key: 'chapter_target_words', label: '章节目标字数', type: 'number', placeholder: '5000', hint: 'AI 生成章节的默认目标字数；大纲也按这个量给每章安排情节。字数和大纲对不上时，AI 容易把下一章的事提前写掉', step: 1 },
       { key: 'chapter_auto_publish', label: 'AI 新章节自动发布', type: 'number', placeholder: '1', hint: '1=生成后直接发布；0=先存为草稿，读者不可见，在章节页审阅后发布', step: 1 },
       { key: 'context_max_recent_chapters', label: '最近章节数', type: 'number', placeholder: '5', hint: '生成章节时带入的最近章节正文数量', step: 1 },
       { key: 'context_summary_max_chars', label: '摘要字符上限', type: 'number', placeholder: '12000', hint: '上下文摘要的最大字符数', step: 1 },

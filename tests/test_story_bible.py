@@ -448,6 +448,7 @@ def test_decisions_flow_from_idea_to_setting_outline_and_chapter(S, fake_ai, cli
     run_task(S, "generate_outline", nid)
     outline_user = [c for c in FakeClient.calls if c[0] == "generate_outline"][-1][2]
     assert "作者定下的要点" in outline_user and "大纲必须按【作者定下的要点】来" in outline_user
+    assert "每章正文约 5000 字" in outline_user, "大纲按正文篇幅安排每章情节量"
     assert client.get(f"/api/admin/novels/{nid}/setting").json()["data"]["decisions"].startswith("- 男主")
 
 

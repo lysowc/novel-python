@@ -271,7 +271,7 @@ CONFIG_DEFAULTS = [
     ("ai_http_timeout", "120", "AI HTTP 超时（秒）"),
     ("context_max_recent_chapters", "5", "上下文携带的最近章节正文数量"),
     ("context_summary_max_chars", "12000", "上下文历史摘要字符上限"),
-    ("chapter_target_words", "3000", "每章目标字数"),
+    ("chapter_target_words", "5000", "每章目标字数"),
     ("outline_volumes", "3", "大纲默认卷数"),
     ("outline_chapters_per_volume", "20", "大纲每卷章数"),
     ("retrieval_enabled", "1", "启用相关章节检索（生成时按相关性召回历史摘要，0=关闭）"),

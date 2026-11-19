@@ -51,7 +51,7 @@ CONFIG_KEYS = {
 CONFIG_DEFAULTS = {
     "site_name": "AI 小说工坊", "ai_temperature": "0.8", "ai_http_timeout": "120",
     "context_max_recent_chapters": "5", "context_summary_max_chars": "12000",
-    "chapter_target_words": "3000", "outline_volumes": "3",
+    "chapter_target_words": "5000", "outline_volumes": "3",
     "outline_chapters_per_volume": "20", "retrieval_enabled": "1",
     "retrieval_max_chapters": "5", "consistency_auto_interval": "10",
     "chapter_auto_publish": "1", "context_max_chars": "60000",

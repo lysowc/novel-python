@@ -40,6 +40,13 @@ DECISIONS_SYSTEM = (
 )
 
 
+def chapter_size_note(db: Session) -> str:
+    """大纲每章安排多少情节：和正文目标字数对上，否则正文写完本章大纲还有字数，就会把下一章的事提前写掉"""
+    words = int(float(config_value(db, "chapter_target_words", 5000)))
+    return (f"每章正文约 {words} 字。按这个篇幅给每章安排情节：一章写完整一个小事件或一个推进节点，"
+            "情节量要够撑满这些字，也不要塞进两三章的内容。")
+
+
 def idea_transcript(db: Session, idea, max_chars: int = 30000) -> str:
     """点子的讨论记录：自己的聊天；从「随便聊聊」提炼出来的点子用来源那次的聊天"""
     from app.models import IdeaChat
@@ -209,7 +216,8 @@ class AiService:
             [{"role": "system", "content": system},
              {"role": "user", "content": "【小说设定】\n" + context_builder.setting_text(novel)
               + ("\n\n大纲必须按【作者定下的要点】来：开场怎么写、关键情节的先后顺序都照它排，核心卖点要贯穿每一卷，"
-                 "不要让支线喧宾夺主。" if novel.setting and (novel.setting.decisions or "").strip() else "")}],
+                 "不要让支线喧宾夺主。" if novel.setting and (novel.setting.decisions or "").strip() else "")
+              + "\n\n" + chapter_size_note(self.db)}],
             {"task_type": "generate_outline", "max_tokens": 16384, "timeout": timeout},
         )
         data = extract_json(result["text"])
@@ -276,7 +284,7 @@ class AiService:
             self._maybe_extend_outline(novel, chapter_no, on_stage)
 
         target_words = int(params.get("target_words") or 0) or int(
-            float(config_value(self.db, "chapter_target_words", 3000)))
+            float(config_value(self.db, "chapter_target_words", 5000)))
         instruction = str(params.get("instruction") or "").strip()
         max_tokens = max(1024, min(32768, target_words * 3))  # 不思考时没有推理余量，正文写长了也不能截断
 
@@ -526,7 +534,8 @@ class AiService:
             outline_lines = ["……（更早的大纲已省略）"] + outline_lines[-80:]
         system = prompt_service.render(self.db, "outline_extend", {"chapters": chapters, "start_no": start_no})
         user = (
-            context_builder.setting_text(novel)
+            chapter_size_note(self.db) + "\n\n"
+            + context_builder.setting_text(novel)
             + "\n\n【现有大纲】\n" + ("\n".join(outline_lines) or "（暂无）")
             + "\n\n【已写章节进度】\n" + context_builder.written_progress_text(self.db, novel, 8000)
             + "\n\n【小说记忆（当前状态）】\n" + context_builder.memory_text(novel)
