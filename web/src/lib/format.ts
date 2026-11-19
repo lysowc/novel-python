@@ -99,7 +99,7 @@ export function parseOutline(raw: string | null | undefined): { volumes: Outline
 
 interface OutlineVolumeLike {
   title: string
-  chapters: { no: number; title: string; summary: string }[]
+  chapters: { no: number; title: string; summary: string; locked?: boolean }[]
 }
 
 /** 全角/半角统一（搜索用） */

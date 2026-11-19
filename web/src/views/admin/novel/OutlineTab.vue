@@ -2,7 +2,7 @@
 import { Button } from '@/components/ui/button'
 
 import { onMounted, ref } from 'vue'
-import { FolderPlus, Plus, Save, Sparkles, Trash2 } from '@lucide/vue'
+import { FolderPlus, Lock, LockOpen, Plus, Save, Sparkles, Trash2 } from '@lucide/vue'
 import { toast } from 'vue-sonner'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -92,7 +92,7 @@ onMounted(load)
 <template>
   <div>
     <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-      <p class="text-sm text-muted-foreground">按「卷 → 章」组织故事结构，保存为结构化 JSON</p>
+      <p class="text-sm text-muted-foreground">按「卷 → 章」组织故事结构。点锁可以把关键章节定死，大纲校准不会改它</p>
       <div class="flex gap-2">
         <Button variant="secondary" class="gap-2" :disabled="running" @click="aiGenerate">
           <Sparkles class="size-4" />
@@ -146,6 +146,16 @@ onMounted(load)
             </span>
             <Input v-model="c.title" class="h-9 sm:w-56" placeholder="章节标题" />
             <Input v-model="c.summary" class="h-9 flex-1" placeholder="本章概要（AI 生成章节时参考）" />
+            <Button
+              variant="ghost"
+              size="icon"
+              class="size-8 shrink-0"
+              :title="c.locked ? '已锁定：大纲校准不会改这一章，点击解锁' : '锁定这一章：大纲校准不会改它（记得保存大纲）'"
+              @click="c.locked = c.locked ? undefined : true"
+            >
+              <Lock v-if="c.locked" class="size-4" />
+              <LockOpen v-else class="size-4 text-muted-foreground/50" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

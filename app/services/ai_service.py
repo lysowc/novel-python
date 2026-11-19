@@ -23,6 +23,41 @@ from app.services.ai_client import AiClient, config_value
 
 MEMORY_CHAPTER_CHARS = 12000  # 更新记忆时最多给 AI 看的正文字数（超出时保留开头和结尾）
 # 补充规则放在 user 消息里：库里已有的 memory_patch prompt 不会随默认值更新
+# 从点子讨论里整理「作者已经拍板的事」：保存点子 / 提炼点子 / 生成设定都用这套规则
+DECISIONS_RULES = (
+    "- 只写作者明确提出、同意或选定的事；AI 提议了但作者没表态的不写；作者否掉的写成「不要……」\n"
+    "- 写具体，尽量保留作者的原话和先后顺序：开场怎么写、用谁的视角、人物身份和关系、关键情节和先后顺序、"
+    "笑点或基调的方向、结局落点\n"
+    "- 作者说「细节以后再说」的地方写成「（待定）……」\n"
+    "- 一行一条，不超过 25 条"
+)
+DECISIONS_SYSTEM = (
+    "你是小说策划编辑。下面是作者和 AI 讨论小说点子的记录。请整理出作者已经拍板的事，"
+    "后面写设定、大纲、正文的人看不到这段讨论，只能照你整理的清单来，所以不能漏掉作者定下的具体做法。\n"
+    + DECISIONS_RULES + "\n只输出 JSON：{\"decisions\": [\"...\"]}"
+)
+
+
+def idea_transcript(db: Session, idea, max_chars: int = 30000) -> str:
+    """点子的讨论记录：自己的聊天；从「随便聊聊」提炼出来的点子用来源那次的聊天"""
+    from app.models import IdeaChat
+    ids = [idea.id] + ([idea.source_idea_id] if getattr(idea, "source_idea_id", None) else [])
+    chats = db.query(IdeaChat).filter(IdeaChat.idea_id.in_(ids)).order_by(IdeaChat.id).all()
+    text = "\n".join(("作者：" if c.role == "user" else "AI：") + c.content for c in chats)
+    if len(text) > max_chars:
+        text = text[:max_chars // 6] + "\n……（中间讨论省略）……\n" + text[-(max_chars - max_chars // 6):]
+    return text
+
+
+def decisions_text(items) -> str:
+    lines = []
+    for item in items if isinstance(items, list) else []:
+        line = str(item or "").strip().lstrip("-•· ").strip()
+        if line:
+            lines.append("- " + line)
+    return "\n".join(lines[:25])
+
+
 MEMORY_PATCH_RULES = (
     "【伏笔记录规则】\n"
     "- 伏笔只记会在后面章节回收的悬念/线索；本章内就会揭晓的小疑问、单纯的场景细节不要记，"
@@ -41,6 +76,9 @@ OUTLINE_SYNC_SYSTEM = (
     "2. 只改确实接不上或已经提前写过的章节；能接上的不要动，措辞也不要改\n"
     "3. 保住主线方向和后面的关键转折、结局；必要时用新的情节把剧情引回主线\n"
     "4. 被正文提前写掉的情节节点，后面的章节不要再写一遍；死了的人后面不能再活着出场\n"
+    "5. 正文开出了不在计划里的支线、或者偏离了【作者定下的要点】和核心卖点时，后续大纲要在 1~2 章内把它收住、"
+    "把剧情拉回主线，不要顺着岔路展开\n"
+    "6. 标了【锁定】的章节是作者定死的，不能改\n"
     "只输出 JSON：{\"deviation\": \"无|轻微|明显\", \"reason\": \"一句话说明偏离了什么\", "
     "\"chapters\": [{\"no\": 章号, \"title\": \"章标题\", \"summary\": \"本章目标\"}]}，"
     "chapters 只放需要修改的章节，不需要修改就给空数组"
@@ -87,10 +125,28 @@ class AiService:
         idea = self.db.query(Idea).filter(Idea.novel_id == novel.id).first()
         idea_content = (idea.content if idea and (idea.content or "").strip()
                         else (novel.description or "").strip())
+        setting = self.db.query(NovelSetting).filter(NovelSetting.novel_id == novel.id).first()
+        decisions = ((setting.decisions if setting else "") or "").strip()
+        if not decisions and idea is not None:
+            # 点子里没存要点（旧点子）：从讨论记录里现整理一份，免得讨论里定下的事在摘要里丢掉
+            decisions = (idea.decisions or "").strip() or self.extract_decisions(idea, on_stage)
+            if decisions:
+                if not setting:
+                    setting = NovelSetting(novel_id=novel.id, created_at=now())
+                    self.db.add(setting)
+                setting.decisions = decisions
+                self.db.commit()
         system = prompt_service.render(self.db, "novel_setting", {"idea_content": idea_content})
+        user = "请根据以上要求，输出完整的小说设定。"
+        if decisions:
+            user = (
+                "【作者已经定下的事】（必须完全遵守：人物身份、视角、开场方式、关键情节的先后顺序、基调都要和这些一致，"
+                "不得改动、省略或替换成你自己的想法；清单没提到的部分再由你补全。【文风要求】里写明作者定的视角）\n"
+                + decisions + "\n\n" + user
+            )
         result = self.client.chat(
             [{"role": "system", "content": system},
-             {"role": "user", "content": "请根据以上要求，输出完整的小说设定。"}],
+             {"role": "user", "content": user}],
             {"task_type": "generate_setting", "max_tokens": 8192},
         )
         sections = parse_sections(result["text"])
@@ -103,7 +159,6 @@ class AiService:
             "故事主线": "main_plot",
             "文风要求": "style",
         }
-        setting = self.db.query(NovelSetting).filter(NovelSetting.novel_id == novel.id).first()
         if not setting:
             setting = NovelSetting(novel_id=novel.id)
             self.db.add(setting)
@@ -117,6 +172,29 @@ class AiService:
         self.db.commit()
         on_stage and on_stage("done", "设定生成完成")
 
+    def extract_decisions(self, idea, on_stage=None) -> str:
+        """从点子讨论记录里整理作者已经拍板的事（没有讨论记录返回空串）"""
+        transcript = idea_transcript(self.db, idea)
+        if not transcript.strip():
+            return ""
+        on_stage and on_stage("decisions", "正在从点子讨论里整理作者已经定下的事...")
+        try:
+            result = self.client.chat(
+                [{"role": "system", "content": DECISIONS_SYSTEM},
+                 {"role": "user", "content": f"点子：{idea.title}\n{idea.content or ''}\n\n讨论记录：\n{transcript}"}],
+                {"task_type": "idea_decisions", "max_tokens": 4096},
+            )
+        except CallbackAbort:
+            raise
+        except Exception as e:  # noqa: BLE001  整理失败不挡住生成设定
+            on_stage and on_stage("decisions_failed", f"整理讨论要点失败（不影响生成设定）：{e}")
+            return ""
+        text = decisions_text(extract_json(result["text"]).get("decisions"))
+        if text:
+            idea.decisions = text
+            self.db.commit()
+        return text
+
     # ============ 大纲 ============
 
     def generate_outline(self, novel: Novel, on_stage=None) -> None:
@@ -127,7 +205,9 @@ class AiService:
         timeout = int(float(config_value(self.db, "ai_http_timeout", 120))) * 3
         result = self.client.chat(
             [{"role": "system", "content": system},
-             {"role": "user", "content": "【小说设定】\n" + context_builder.setting_text(novel)}],
+             {"role": "user", "content": "【小说设定】\n" + context_builder.setting_text(novel)
+              + ("\n\n大纲必须按【作者定下的要点】来：开场怎么写、关键情节的先后顺序都照它排，核心卖点要贯穿每一卷，"
+                 "不要让支线喧宾夺主。" if novel.setting and (novel.setting.decisions or "").strip() else "")}],
             {"task_type": "generate_outline", "max_tokens": 16384, "timeout": timeout},
         )
         data = extract_json(result["text"])
@@ -690,7 +770,7 @@ class AiService:
         later = [c for c in entries if int(c.get("no") or 0) > chapter_no + OUTLINE_SYNC_WINDOW]
 
         def line(c):
-            return f"第{c.get('no')}章 {c.get('title', '')}：{c.get('summary', '')}"
+            return f"第{c.get('no')}章 {c.get('title', '')}：{c.get('summary', '')}" + ("【锁定】" if c.get("locked") else "")
 
         on_stage and on_stage("outline_sync", "正在对照大纲检查本章是否偏离，必要时调整后续大纲...")
         user = (
@@ -713,7 +793,7 @@ class AiService:
         data = extract_json(result["text"])
         if not data:
             raise RuntimeError("AI 未返回合法 JSON")
-        allowed = {int(c.get("no") or 0): c for c in window}
+        allowed = {int(c.get("no") or 0): c for c in window if not c.get("locked")}
         changed = []
         for item in data.get("chapters") or []:
             if not isinstance(item, dict):

@@ -202,7 +202,7 @@ async function useStarter(s: { send?: string; fill?: string }) {
 // ---------- 提炼点子（随便聊聊里可能聊出好几个方向） ----------
 const extractOpen = ref(false)
 const extracting = ref(false)
-const extracted = ref<{ title: string; content: string; picked: boolean }[]>([])
+const extracted = ref<{ title: string; content: string; decisions: string; picked: boolean }[]>([])
 const savingPicked = ref(false)
 const pickedCount = computed(() => extracted.value.filter((x) => x.picked).length)
 
@@ -226,7 +226,10 @@ async function savePicked() {
   savingPicked.value = true
   try {
     for (const x of picked) {
-      await createIdea({ title: x.title.trim(), content: x.content.trim(), category_id: idea.value?.category_id || 0, mode: 'refine' })
+      await createIdea({
+        title: x.title.trim(), content: x.content.trim(), decisions: x.decisions.trim(),
+        category_id: idea.value?.category_id || 0, mode: 'refine', source_idea_id: Number(ideaId.value),
+      })
     }
     toast.success(`已保存 ${picked.length} 个点子，在「AI 点子」列表里，可以分别进去接着打磨`)
     extractOpen.value = false
@@ -429,6 +432,15 @@ onBeforeUnmount(() => controller.value?.abort())
             <div class="min-w-0 flex-1 space-y-2">
               <Input v-model="x.title" class="h-9 font-medium" maxlength="60" />
               <Textarea v-model="x.content" :rows="4" class="resize-y text-sm leading-relaxed" />
+              <div class="space-y-1">
+                <p class="text-xs text-muted-foreground">你在讨论里定下的事（创建小说时会原样带进设定，AI 必须照着写）</p>
+                <Textarea
+                  v-model="x.decisions"
+                  :rows="3"
+                  placeholder="这个点子还没定过什么，可以留空"
+                  class="resize-y text-xs leading-relaxed"
+                />
+              </div>
             </div>
           </label>
         </div>

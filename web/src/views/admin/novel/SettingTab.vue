@@ -15,6 +15,7 @@ const props = defineProps<{ novelId: number }>()
 const loading = ref(true)
 const saving = ref(false)
 const form = ref({
+  decisions: '',
   world_view: '',
   characters: '',
   factions: '',
@@ -40,6 +41,7 @@ async function load() {
   try {
     const s: NovelSetting = await fetchNovelSetting(props.novelId)
     form.value = {
+      decisions: s.decisions || '',
       world_view: s.world_view || '',
       characters: s.characters || '',
       factions: s.factions || '',
@@ -89,6 +91,19 @@ onMounted(load)
     <LoadingState v-if="loading" variant="table" :rows="3" />
 
     <div v-else class="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">
+      <div class="space-y-1.5 rounded-xl border border-foreground/20 bg-foreground/[0.03] p-4">
+        <Label>作者定下的要点</Label>
+        <p class="text-xs text-muted-foreground">
+          你已经拍板的事，一行一条：开场怎么写、谁的视角、关键情节的先后顺序、不要什么……
+          AI 生成设定、大纲、正文时都必须照着来，大纲校准也会以它为准把跑偏的剧情拉回来。从点子创建的小说会自动带上讨论里定下的事。
+        </p>
+        <Textarea
+          v-model="form.decisions"
+          :rows="6"
+          placeholder="- 男主第一人称，开局先自我介绍&#10;- 第 1 章妈妈就识破台词、要到女孩微信&#10;- 不要电梯搭讪"
+          class="resize-y text-sm leading-relaxed"
+        />
+      </div>
       <div v-for="f in fields" :key="f.key" class="space-y-1.5">
         <Label>{{ f.label }}</Label>
         <Textarea

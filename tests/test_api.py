@@ -323,8 +323,8 @@ def test_idea_explore_mode_prompt_and_extract(S, client, monkeypatch):
     assert "PROMPT[idea_explore]" in seen["system"] and "还没有明确的点子" in seen["system"]
 
     assert client.post(f"/api/admin/ideas/{iid}/extract").json()["data"]["ideas"] == [
-        {"title": "怂熊守关", "content": "一头怕挨打的守关熊……"},
-        {"title": "言出法随", "content": "说什么都按字面成真的青年……"}]
+        {"title": "怂熊守关", "content": "一头怕挨打的守关熊……", "decisions": ""},
+        {"title": "言出法随", "content": "说什么都按字面成真的青年……", "decisions": ""}]
     assert "作者：没想法，随便聊聊" in seen["extract_input"]
 
     client.put(f"/api/admin/ideas/{iid}", json={"mode": "refine"})

@@ -70,6 +70,7 @@ class NovelSetting(Base):
     __tablename__ = "novel_setting"
     id = Column(Integer, primary_key=True, autoincrement=True)
     novel_id = Column(Integer, nullable=False, unique=True)
+    decisions = Column(Text, nullable=True)  # 作者定下的要点：生成设定/大纲/正文都必须遵守
     world_view = Column(Text, nullable=True)
     characters = Column(Text, nullable=True)
     factions = Column(Text, nullable=True)
@@ -81,6 +82,7 @@ class NovelSetting(Base):
     updated_at = Column(DateTime, nullable=True)
 
     FIELD_LABELS = {
+        "decisions": "作者定下的要点（作者已经拍板，必须遵守，不得改动）",
         "world_view": "世界观",
         "characters": "主要人物设定",
         "factions": "主要势力",
@@ -151,9 +153,11 @@ class Idea(Base):
     category_id = Column(Integer, nullable=True)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=True)
+    decisions = Column(Text, nullable=True)  # 讨论里作者已经拍板的事，一行一条；创建小说时带进设定
     status = Column(String(20), nullable=False, default="unused")
     mode = Column(String(16), nullable=False, default="refine")  # refine 打磨点子 / explore 随便聊聊
     novel_id = Column(Integer, nullable=True)
+    source_idea_id = Column(Integer, nullable=True)  # 从哪次「随便聊聊」提炼出来的（讨论记录在那边）
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 

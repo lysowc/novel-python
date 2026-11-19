@@ -14,7 +14,11 @@ def setting_text(novel: Novel) -> str:
     if not setting or setting.is_empty():
         description = (novel.description or "").strip()
         return f"【小说简介】{description}\n（其余设定尚未生成）"
-    return setting.to_context_text()
+    text = setting.to_context_text()
+    if not (setting.world_view or setting.characters or setting.main_plot):
+        # 只有作者要点、其余设定还没生成：把简介也带上
+        text = f"【小说简介】{(novel.description or '').strip()}\n\n" + text
+    return text
 
 
 def memory_text(novel: Novel) -> str:

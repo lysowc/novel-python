@@ -417,3 +417,77 @@ def test_style_sample_only_in_chapter_context(S, fake_ai, client):  # noqa: F811
     # 只改别的字段时样章不被清掉
     client.put("/api/admin/novels/1/setting", json={"style": "改了"})
     assert client.get("/api/admin/novels/1/setting").json()["data"]["style_sample"].startswith("黑三")
+
+
+# ---------- 点子讨论里定下的事，一路带到设定 / 大纲 / 正文 ----------
+
+def test_decisions_flow_from_idea_to_setting_outline_and_chapter(S, fake_ai, client):  # noqa: F811
+    from conftest import FakeClient
+    from app.models import Idea, IdeaChat, NovelSetting
+    db = S()
+    src = Idea(title="随便聊聊", content="", status="unused", mode="explore")
+    db.add(src)
+    db.commit()
+    db.add(IdeaChat(idea_id=src.id, role="user", content="男主第一人称，开局先自我介绍"))
+    db.commit()
+    src_id = src.id
+    db.close()
+    # 提炼出的点子带着要点存下来，创建小说时要点直接进设定
+    r = client.post("/api/admin/ideas", json={"title": "反套路霸总", "content": "霸总照搬老爸台词",
+                                              "decisions": "- 男主第一人称\n- 妈妈第 1 章就要到女孩微信",
+                                              "source_idea_id": src_id}).json()["data"]
+    assert r["decisions"].startswith("- 男主第一人称") and r["source_idea_id"] == src_id
+    nid = client.post(f"/api/admin/ideas/{r['id']}/create-novel").json()["data"]["novel_id"]
+    db = S()
+    assert db.query(NovelSetting).filter_by(novel_id=nid).one().decisions.startswith("- 男主第一人称")
+    db.close()
+    run_task(S, "generate_setting", nid)
+    kind, _, user = [c for c in FakeClient.calls if c[0] == "generate_setting"][-1]
+    assert "【作者已经定下的事】" in user and "妈妈第 1 章就要到女孩微信" in user
+    assert not [c for c in FakeClient.calls if c[0] == "idea_decisions"], "已有要点就不再重新整理"
+    run_task(S, "generate_outline", nid)
+    outline_user = [c for c in FakeClient.calls if c[0] == "generate_outline"][-1][2]
+    assert "作者定下的要点" in outline_user and "大纲必须按【作者定下的要点】来" in outline_user
+    assert client.get(f"/api/admin/novels/{nid}/setting").json()["data"]["decisions"].startswith("- 男主")
+
+
+def test_old_idea_without_decisions_extracts_from_source_chat(S, fake_ai):
+    from conftest import FakeClient
+    from app.models import Idea, IdeaChat, NovelSetting
+    make_novel(S, 1)
+    db = S()
+    src = Idea(title="随便聊聊", content="", status="unused", mode="explore")
+    db.add(src)
+    db.commit()
+    db.add(IdeaChat(idea_id=src.id, role="user", content="不要电梯搭讪，开局男主自我介绍"))
+    db.add(Idea(title="霸总", content="摘要", status="used", novel_id=1, source_idea_id=src.id))
+    db.commit()
+    db.close()
+    run_task(S, "generate_setting", 1)
+    calls = [c for c in FakeClient.calls if c[0] == "idea_decisions"]
+    assert calls and "不要电梯搭讪" in calls[0][2], "从来源那次随便聊聊的讨论里整理"
+    db = S()
+    assert db.query(NovelSetting).filter_by(novel_id=1).one().decisions == "- 开场用男主第一人称自我介绍\n- 不要电梯搭讪"
+    assert db.query(Idea).filter_by(novel_id=1).one().decisions.startswith("- 开场用男主")
+    db.close()
+    user = [c for c in FakeClient.calls if c[0] == "generate_setting"][-1][2]
+    assert "不要电梯搭讪" in user
+
+
+def test_outline_sync_respects_locked_and_pulls_back(S, fake_ai):
+    from conftest import FakeClient
+    from app.models import Novel
+    outline = json.dumps({"volumes": [{"title": "一", "chapters": [
+        {"no": i, "title": f"t{i}", "summary": f"原大纲{i}", **({"locked": True} if i == 3 else {})}
+        for i in range(1, 10)]}]}, ensure_ascii=False)
+    make_novel(S, 1, outline=outline)
+    FakeClient.outline_sync[1] = {"deviation": "明显", "chapters": [
+        {"no": 2, "summary": "收住寻宝支线"}, {"no": 3, "summary": "锁定的不许改"}]}
+    run_task(S, "continue_chapter", 1)
+    db = S()
+    chs = {c["no"]: c for c in db.get(Novel, 1).get_outline_array()["volumes"][0]["chapters"]}
+    db.close()
+    assert chs[2]["summary"] == "收住寻宝支线" and chs[3]["summary"] == "原大纲3" and chs[3]["locked"] is True
+    system = [c for c in FakeClient.calls if c[0] == "outline_sync"][-1][1]
+    assert "拉回主线" in system and "【锁定】" in system
+    assert "第3章 t3：原大纲3【锁定】" in FakeClient.outline_inputs[1]

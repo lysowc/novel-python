@@ -258,7 +258,8 @@ def novel_chapter_store(nid: int, payload: dict, db: Session = Depends(get_db)):
     return ok(f_chapter(c), "章节已添加")
 
 
-SETTING_FIELDS = ("world_view", "characters", "factions", "conflicts", "main_plot", "style", "style_sample")
+SETTING_FIELDS = ("decisions", "world_view", "characters", "factions", "conflicts", "main_plot", "style",
+                  "style_sample")
 
 
 def _f_setting(setting: NovelSetting) -> dict:

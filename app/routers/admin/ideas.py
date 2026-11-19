@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.helpers import dt_str, fail, json_dumps, now, ok
 from app.models import (
-    Idea, IdeaChat, Novel,
+    Idea, IdeaChat, Novel, NovelSetting,
 )
 from app.services import prompt_service, task_service
+from app.services.ai_service import DECISIONS_RULES, decisions_text
 from app.routers.admin.formatters import f_idea
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -50,6 +51,8 @@ def idea_store(payload: dict, db: Session = Depends(get_db)):
     i = Idea(
         category_id=int(payload.get("category_id") or 0) or None, title=title[:255],
         content=str(payload.get("content") or "").strip(), status="unused", mode=mode,
+        decisions=str(payload.get("decisions") or "").strip() or None,
+        source_idea_id=int(payload.get("source_idea_id") or 0) or None,
         created_at=now(), updated_at=now(),
     )
     db.add(i)
@@ -70,6 +73,8 @@ def idea_update(iid: int, payload: dict, db: Session = Depends(get_db)):
         i.category_id = int(payload.get("category_id")) or None
     if payload.get("mode") in IDEA_MODES:
         i.mode = payload["mode"]
+    if payload.get("decisions") is not None:
+        i.decisions = str(payload.get("decisions")).strip() or None
     i.updated_at = now()
     db.commit()
     return ok(f_idea(i), "已保存")
@@ -239,7 +244,10 @@ EXTRACT_SYSTEM = (
     "- 1~5 个，按作者的兴趣从高到低排\n"
     "- 讨论里作者补充过的细节、改过的地方要写进去，以作者的说法为准\n"
     "- 每个点子：title 不超过 20 字；content 150~300 字，写清核心创意、主角和处境、好玩在哪、大概怎么往下走\n"
-    "只输出 JSON：{\"ideas\": [{\"title\": \"\", \"content\": \"\"}]}"
+    "- 每个点子再列 decisions：作者针对这个点子已经拍板的事。规则：\n"
+    + DECISIONS_RULES + "\n"
+    "  只聊了一两句、作者没定过什么的点子，decisions 给空数组\n"
+    "只输出 JSON：{\"ideas\": [{\"title\": \"\", \"content\": \"\", \"decisions\": [\"\"]}]}"
 )
 
 
@@ -274,7 +282,8 @@ def idea_extract(iid: int, db: Session = Depends(get_db)):
     items = []
     for it in data.get("ideas") or [] if isinstance(data, dict) else []:
         if isinstance(it, dict) and str(it.get("title") or "").strip() and str(it.get("content") or "").strip():
-            items.append({"title": str(it["title"]).strip()[:60], "content": str(it["content"]).strip()})
+            items.append({"title": str(it["title"]).strip()[:60], "content": str(it["content"]).strip(),
+                          "decisions": decisions_text(it.get("decisions"))})
     if not items:
         return fail("没能从讨论里提炼出点子，再多聊几句试试")
     return ok({"ideas": items[:5]})
@@ -294,28 +303,35 @@ def idea_save(iid: int, db: Session = Depends(get_db)):
     if not chats:
         return fail("还没有聊天内容")
     transcript = "\n".join(("作者：" if c.role == "user" else "AI：") + c.content for c in chats)
-    if len(transcript) > 15000:
-        transcript = transcript[:3000] + "\n……（中间讨论省略）……\n" + transcript[-12000:]
+    if len(transcript) > 30000:
+        transcript = transcript[:5000] + "\n……（中间讨论省略）……\n" + transcript[-25000:]
 
-    title, content = "", ""
+    title, content, decisions = "", "", ""
     try:
+        from app.services.ai_service import extract_json
         system = (
             "你是一位网文策划编辑。请根据下面的讨论记录，提炼出小说点子。\n"
-            "严格只输出两行：\n"
-            "第一行：标题（20 字以内）\n"
-            "第二行：点子内容（200~400 字，包含核心创意、主角设定、世界观、卖点）"
+            "title：标题（20 字以内）；content：点子内容（200~400 字，包含核心创意、主角设定、世界观、卖点）；\n"
+            "decisions：作者在讨论里已经拍板的事。规则：\n" + DECISIONS_RULES + "\n"
+            "只输出 JSON：{\"title\": \"\", \"content\": \"\", \"decisions\": [\"\"]}"
         )
         result = AiClient(db).chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": f"讨论记录：\n{transcript}"}],
-            {"task_type": "idea_save"},
+            {"task_type": "idea_save", "max_tokens": 4096},
         )
-        lines = [l.strip() for l in result["text"].strip().split("\n") if l.strip()]
-        title = lines[0] if lines else ""
-        content = "\n".join(lines[1:])
+        data = extract_json(result["text"])
+        if data:
+            title = str(data.get("title") or "").strip()
+            content = str(data.get("content") or "").strip()
+            decisions = decisions_text(data.get("decisions"))
+        else:  # 兼容：模型没按 JSON 返回，按「第一行标题、其余内容」解析
+            lines = [l.strip() for l in result["text"].strip().split("\n") if l.strip()]
+            title = lines[0] if lines else ""
+            content = "\n".join(lines[1:])
         title = re.sub(r"^(标题|书名)[:：]\s*", "", title)
     except Exception:
-        title, content = "", ""
+        title, content, decisions = "", "", ""
 
     if not title or not content:
         last_user = next((c for c in reversed(chats) if c.role == "user"), None)
@@ -327,6 +343,8 @@ def idea_save(iid: int, db: Session = Depends(get_db)):
 
     idea.title = title
     idea.content = content
+    if decisions:
+        idea.decisions = decisions
     idea.updated_at = now()
     db.commit()
     return ok(f_idea(idea), "点子已保存")
@@ -346,6 +364,9 @@ def idea_create_novel(iid: int, db: Session = Depends(get_db)):
     )
     db.add(n)
     db.commit()
+    if (idea.decisions or "").strip():
+        # 讨论里拍板的事直接进设定，生成设定/大纲/正文都照它来
+        db.add(NovelSetting(novel_id=n.id, decisions=idea.decisions.strip(), created_at=now(), updated_at=now()))
     idea.novel_id = n.id
     idea.status = "used"
     idea.updated_at = now()

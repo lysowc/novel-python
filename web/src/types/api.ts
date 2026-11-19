@@ -97,6 +97,9 @@ export interface Idea {
   title: string
   content: string
   status: IdeaStatus
+  /** 讨论里作者已经拍板的事，一行一条 */
+  decisions?: string
+  source_idea_id?: number
   /** refine 打磨点子 / explore 随便聊聊 */
   mode?: 'refine' | 'explore'
   category_name?: string
@@ -249,6 +252,8 @@ export interface AiLogDetail extends AiLog {
 export interface NovelSetting {
   id: number
   novel_id: number
+  /** 作者定下的要点：生成设定/大纲/正文都必须遵守 */
+  decisions?: string
   world_view: string
   characters: string
   factions: string
@@ -264,6 +269,8 @@ export interface OutlineChapter {
   no: number
   title: string
   summary: string
+  /** 作者锁定：大纲校准不会改它 */
+  locked?: boolean
 }
 
 export interface OutlineVolume {

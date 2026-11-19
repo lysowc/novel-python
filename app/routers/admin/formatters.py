@@ -51,7 +51,8 @@ def f_idea(i: Idea) -> dict:
     return {
         "id": i.id, "category_id": i.category_id,
         "category_name": i.category.name if i.category else "",
-        "title": i.title, "content": i.content, "status": i.status, "mode": i.mode or "refine",
+        "title": i.title, "content": i.content, "decisions": i.decisions or "", "status": i.status,
+        "mode": i.mode or "refine", "source_idea_id": i.source_idea_id or 0,
         "novel_id": i.novel_id, "created_at": dt_str(i.created_at), "updated_at": dt_str(i.updated_at),
     }
 

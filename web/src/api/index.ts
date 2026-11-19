@@ -299,7 +299,7 @@ export function fetchIdea(id: number | string) {
 
 /** 从「随便聊聊」的讨论里提炼几个点子（只返回，不保存） */
 export function extractIdeas(id: number | string) {
-  return http.post<{ ideas: { title: string; content: string }[] }>(`/admin/ideas/${id}/extract`)
+  return http.post<{ ideas: { title: string; content: string; decisions: string }[] }>(`/admin/ideas/${id}/extract`)
 }
 
 export function fetchIdeaMessages(id: number | string) {
