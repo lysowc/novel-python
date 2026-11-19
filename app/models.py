@@ -94,17 +94,17 @@ class NovelSetting(Base):
     def is_empty(self) -> bool:
         return all(not (getattr(self, f) or "").strip() for f in self.FIELD_LABELS)
 
-    # 写正文时要点换个说法：要点里按顺序列着全书的情节，照原样给 AI 会被当成本章任务清单，一章写掉好几章
-    CHAPTER_DECISIONS_LABEL = ("全书要点（作者定下的大方向，用来保证人物、视角、基调和情节先后不写错。"
-                               "里面的情节要按大纲的节奏在对应章节才写到，不是本章的任务清单；本章只写【本章大纲】里的事）")
+    # 写正文时不给全书剧情：作者要点和故事主线按顺序写着整本书会发生什么，AI 拿着全书剧透写开头，
+    # 会急着往钩子上赶，一章写掉好几章。剧情方向已经落到大纲里，写正文只看本章大纲和后面几章的安排
+    CHAPTER_HIDDEN_FIELDS = ("decisions", "main_plot")
 
     def to_context_text(self, for_chapter: bool = False) -> str:
         parts = []
         for field, label in self.FIELD_LABELS.items():
+            if for_chapter and field in self.CHAPTER_HIDDEN_FIELDS:
+                continue
             value = (getattr(self, field) or "").strip()
             if value:
-                if field == "decisions" and for_chapter:
-                    label = self.CHAPTER_DECISIONS_LABEL
                 parts.append(f"【{label}】\n{value}")
         return "\n\n".join(parts)
 
