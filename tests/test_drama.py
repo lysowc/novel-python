@@ -124,5 +124,13 @@ def test_opening_plan_sees_whole_book(S, fake_ai):
     first, second = [c[2] for c in FakeClient.calls if c[0] == "drama_plan"]
     assert "【全书已写章节梗概】" in first and "第7章 第7章：梗概第7章：温以宁出场" in first
     assert "这是全剧开头" in first and "这是全剧开头" not in second, "前 3 集之后不再要求"
+    db = S()
+    ep1 = db.query(DramaEpisode).filter_by(novel_id=1, episode_no=1).one()
+    ep1.hook = "（冷开场·第7章）温以宁按喇叭"
+    db.commit()
+    db.close()
     run_task(S, "drama_script", 1)
-    assert "【全书已写章节梗概】" in FakeClient.drama_inputs[1] and "【全书已写章节梗概】" not in FakeClient.drama_inputs[4]
+    ctx1, ctx2 = FakeClient.drama_inputs[1], FakeClient.drama_inputs[2]
+    assert "【全书已写章节梗概】" not in ctx1, "剧本不给全书梗概，免得正片搬后面的事"
+    assert "【闪前用到的章节】" in ctx1 and "原著第7章正文" in ctx1 and "原著第6章正文" not in ctx1
+    assert "【闪前用到的章节】" not in ctx2

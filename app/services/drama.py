@@ -6,6 +6,7 @@
 人物口吻、关系、外形都从资料库的人物档案里取，跟小说保持一致。
 """
 import json
+import re
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,6 +19,7 @@ from app.services.ai_client import config_value
 PLAN_WINDOW = 5            # 每次给 AI 几章来切分集
 SOURCE_CAP = 24000         # 写剧本时带的原著正文上限（字）
 PREV_SCRIPT_TAIL = 1200    # 带上前一集剧本的结尾多少字
+FLASH_CAP = 6000           # 冷开场引用的章节正文上限（字）
 DEFAULT_SECONDS = 90
 
 
@@ -208,6 +210,17 @@ def _source_text(db: Session, novel_id: int, ep: DramaEpisode) -> str:
     return text[:SOURCE_CAP]
 
 
+def flash_source(db: Session, novel_id: int, ep: DramaEpisode) -> str:
+    """开头钩子是后面章节的冷开场时，只给那一章的正文（不给全书梗概，免得正片把后面的事搬过来）"""
+    nos = sorted({int(n) for n in re.findall(r"第(\d+)章", ep.hook or "")} - set(range(ep.chapter_from, ep.chapter_to + 1)))
+    parts = []
+    for no in nos[:2]:
+        rows = written_chapters(db, novel_id, no, no)
+        if rows:
+            parts.append(f"第{no}章 {rows[0].title}\n{rows[0].content[:FLASH_CAP]}")
+    return "\n\n".join(parts)
+
+
 def write_script(ai, novel: Novel, ep: DramaEpisode, on_delta=None) -> str:
     db = ai.db
     seconds = episode_seconds(db)
@@ -223,8 +236,10 @@ def write_script(ai, novel: Novel, ep: DramaEpisode, on_delta=None) -> str:
         user += "\n\n【上一集】\n" + _ep_plan_text(prev)
         if (prev.script or "").strip():
             user += "\n上一集剧本结尾：\n" + prev.script.strip()[-PREV_SCRIPT_TAIL:]
-    if ep.episode_no <= OPENING_EPISODES and (overview := book_overview(db, novel.id)):
-        user += "\n\n【全书已写章节梗概】（开头钩子用到后面章节的场面时，按这里写对）\n" + overview
+    flash = flash_source(db, novel.id, ep)
+    if flash:
+        user += ("\n\n【闪前用到的章节】（只用来写开头【闪前】那几个镜头；正片一个情节、一句台词都不许从这里拿）\n"
+                 + flash)
     user += "\n\n【本集方案】\n" + _ep_plan_text(ep)
     if nxt:
         user += ("\n\n【下一集方案（只用来知道本集停在哪，下一集的内容本集一句都不要演）】\n"
