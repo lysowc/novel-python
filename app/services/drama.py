@@ -78,6 +78,18 @@ def _ep_plan_text(ep: DramaEpisode) -> str:
 
 # ---------- 分集方案 ----------
 
+OPENING_EPISODES = 3       # 前几集算"开头"：要尽快让主要人物和核心冲突出场
+OVERVIEW_CAP = 12000       # 全书梗概上限（字）
+
+
+def book_overview(db: Session, novel_id: int) -> str:
+    """全书已写章节的梗概（每章摘要），让分集时知道主要人物、核心冲突和高光在哪"""
+    rows = written_chapters(db, novel_id)
+    lines = [f"第{c.chapter_no}章 {c.title}：{(c.summary or c.content[:200]).strip()}" for c in rows]
+    text = "\n".join(lines)
+    return text if len(text) <= OVERVIEW_CAP else text[:OVERVIEW_CAP] + "\n……"
+
+
 def plan(ai, novel: Novel, task, on_stage=None) -> int:
     """把还没改编的章节切成分集，接着已有分集往后编号；返回新增集数"""
     db = ai.db
@@ -89,6 +101,7 @@ def plan(ai, novel: Novel, task, on_stage=None) -> int:
         raise RuntimeError(f"没有需要改编的新章节（已改编到第{start - 1}章）")
     seconds = episode_seconds(db)
     system = prompt_service.render(db, "drama_plan", {"seconds": seconds})
+    overview = book_overview(db, novel.id)
     added = 0
     for i in range(0, len(chapters), PLAN_WINDOW):
         window = chapters[i:i + PLAN_WINDOW]
@@ -97,11 +110,17 @@ def plan(ai, novel: Novel, task, on_stage=None) -> int:
         existing = episodes(db, novel.id)
         prev = "\n\n".join(_ep_plan_text(e) for e in existing[-3:]) or "（还没有，从第1集开始）"
         source = "\n\n".join(f"第{c.chapter_no}章 {c.title}\n{c.content}" for c in window)
+        opening = len(existing) < OPENING_EPISODES
+        people = _profiles_in(db, novel.id, source + (overview if opening else ""))
         user = (context_builder.setting_text(novel, for_chapter=True)
-                + ("\n\n【人物】\n" + p if (p := _profiles_in(db, novel.id, source)) else "")
+                + ("\n\n【人物】\n" + people if people else "")
+                + ("\n\n【全书已写章节梗概】（知道整部戏的主要人物和看点在哪，开头怎么抓人）\n" + overview if overview else "")
                 + "\n\n【已有分集（最后几集）】\n" + prev
                 + f"\n\n【这次要改编的章节：第{lo}-{hi}章】\n" + source
-                + f"\n\n请把第{lo}-{hi}章切成分集，集号从第{(existing[-1].episode_no if existing else 0) + 1}集接着编。")
+                + f"\n\n请把第{lo}-{hi}章切成分集，集号从第{(existing[-1].episode_no if existing else 0) + 1}集接着编。"
+                + ("\n这是全剧开头：第 1 集就要让观众知道这部戏讲谁、看点是什么。"
+                   "主要人物（尤其是男女主角）和核心冲突要在前 3 集内出场；小说开头的背景铺垫压缩成一两集以内，"
+                   "可以用后面章节的高光场面做第 1 集的冷开场（写进 hook，并注明是哪一章的哪件事）。" if opening else ""))
         result = ai.client.chat([{"role": "system", "content": system}, {"role": "user", "content": user}],
                                 {"task_type": "drama_plan", "max_tokens": 8192})
         from app.services.ai_service import extract_json
@@ -204,6 +223,8 @@ def write_script(ai, novel: Novel, ep: DramaEpisode, on_delta=None) -> str:
         user += "\n\n【上一集】\n" + _ep_plan_text(prev)
         if (prev.script or "").strip():
             user += "\n上一集剧本结尾：\n" + prev.script.strip()[-PREV_SCRIPT_TAIL:]
+    if ep.episode_no <= OPENING_EPISODES and (overview := book_overview(db, novel.id)):
+        user += "\n\n【全书已写章节梗概】（开头钩子用到后面章节的场面时，按这里写对）\n" + overview
     user += "\n\n【本集方案】\n" + _ep_plan_text(ep)
     if nxt:
         user += ("\n\n【下一集方案（只用来知道本集停在哪，下一集的内容本集一句都不要演）】\n"

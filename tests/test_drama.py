@@ -111,3 +111,18 @@ def test_drama_api_edit_delete_and_source_changed(S, fake_ai, client):  # noqa: 
     db.commit()
     assert db.query(DramaEpisode).count() == 0
     db.close()
+
+
+def test_opening_plan_sees_whole_book(S, fake_ai):
+    _book(S, 7)
+    db = S()
+    for c in db.query(Chapter).filter_by(novel_id=1):
+        c.summary = f"梗概第{c.chapter_no}章：温以宁出场" if c.chapter_no == 7 else f"梗概第{c.chapter_no}章"
+    db.commit()
+    db.close()
+    run_task(S, "drama_plan", 1)
+    first, second = [c[2] for c in FakeClient.calls if c[0] == "drama_plan"]
+    assert "【全书已写章节梗概】" in first and "第7章 第7章：梗概第7章：温以宁出场" in first
+    assert "这是全剧开头" in first and "这是全剧开头" not in second, "前 3 集之后不再要求"
+    run_task(S, "drama_script", 1)
+    assert "【全书已写章节梗概】" in FakeClient.drama_inputs[1] and "【全书已写章节梗概】" not in FakeClient.drama_inputs[4]
