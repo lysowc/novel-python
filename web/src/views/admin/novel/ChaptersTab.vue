@@ -144,13 +144,25 @@ const outline = ref<OutlineStatus | null>(null)
 const extendOpen = ref(false)
 
 // 质量提醒：自动重写后仍有问题的章节
-const qualityTasks = computed(() =>
-  recentTasks.value.filter((t) => t.status === 'success' && (t.params?.quality_warning || t.params?.repetition_warning) && !dismissed.value.includes(t.id)),
-)
+// 后面已经写了新章节：节奏提示自动忽略（超前的内容已被后文接住，再重写反而接不上）；
+// 其余提示保留，但不再推荐直接重新生成
 function qualityChapterNo(t: AiTask): number | undefined {
   const r = t.params?.resume as { chapter_no?: number } | undefined
-  return r?.chapter_no
+  return r?.chapter_no || (t.params?.chapter_no as number | undefined) || undefined
 }
+function hasLater(t: AiTask): boolean {
+  const no = qualityChapterNo(t)
+  return !!no && latestNo.value > no
+}
+function qualityText(t: AiTask): string {
+  let issues = String(t.params?.quality_warning || '').split('；').filter(Boolean)
+  if (hasLater(t)) issues = issues.filter((i) => !i.startsWith('节奏'))
+  if (t.params?.repetition_warning) issues.push(String(t.params.repetition_warning))
+  return issues.join('；')
+}
+const qualityTasks = computed(() =>
+  recentTasks.value.filter((t) => t.status === 'success' && !dismissed.value.includes(t.id) && qualityText(t)),
+)
 
 const drafts = computed(() => chapters.value.filter((c) => c.status === 'draft'))
 const publishing = ref(false)
@@ -491,10 +503,11 @@ onBeforeUnmount(stopPolling)
       <p class="text-sm font-medium">质量提醒：这些章节可能有问题，建议看一下</p>
       <div v-for="t in qualityTasks" :key="t.id" class="flex flex-wrap items-start gap-2 text-sm">
         <p class="min-w-0 flex-1 text-muted-foreground">
-          <span class="text-foreground">{{ qualityChapterNo(t) ? `第 ${qualityChapterNo(t)} 章` : `任务 #${t.id}` }}</span>：<template v-if="t.params?.quality_warning">{{ t.params.quality_warning }}</template><template v-if="t.params?.quality_warning && t.params?.repetition_warning">；</template><template v-if="t.params?.repetition_warning">{{ t.params.repetition_warning }}</template>
+          <span class="text-foreground">{{ qualityChapterNo(t) ? `第 ${qualityChapterNo(t)} 章` : `任务 #${t.id}` }}</span>：{{ qualityText(t) }}
+          <span v-if="hasLater(t)" class="block text-xs">后面已经写了新章节，直接重新生成可能和后文接不上，一般忽略即可</span>
         </p>
         <Button
-          v-if="qualityChapterNo(t)"
+          v-if="qualityChapterNo(t) && !hasLater(t)"
           size="sm"
           variant="outline"
           :disabled="!!runningTask"
