@@ -18,6 +18,7 @@ import MemoryTab from './novel/MemoryTab.vue'
 import ConsistencyTab from './novel/ConsistencyTab.vue'
 import AutomationTab from './novel/AutomationTab.vue'
 import BibleTab from './novel/BibleTab.vue'
+import DramaTab from './novel/DramaTab.vue'
 import { exportNovel, fetchAdminNovel, restoreNovel } from '@/api'
 import { formatNumber } from '@/lib/format'
 import type { NovelDetail } from '@/types/api'
@@ -38,6 +39,7 @@ const tabItems = [
   { value: 'memory', label: '记忆' },
   { value: 'bible', label: '资料库' },
   { value: 'consistency', label: '审校' },
+  { value: 'drama', label: '短剧' },
   { value: 'automation', label: '自动化' },
 ]
 
@@ -167,6 +169,9 @@ async function doExport(format: 'txt' | 'md' | 'epub') {
         </TabsContent>
         <TabsContent value="consistency" class="mt-5">
           <ConsistencyTab :novel-id="Number(id)" />
+        </TabsContent>
+        <TabsContent value="drama" class="mt-5">
+          <DramaTab :novel-id="Number(id)" :deleted="!!novel.deleted_at" />
         </TabsContent>
         <TabsContent value="automation" class="mt-5">
           <AutomationTab :novel-id="Number(id)" :deleted="!!novel.deleted_at" />

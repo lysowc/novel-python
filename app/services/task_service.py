@@ -30,6 +30,9 @@ TYPES = [
     "rebuild_memory",
     "extend_outline",
     "arc_summary",
+    "drama_plan",
+    "drama_script",
+    "drama_storyboard",
 ]
 
 
@@ -491,6 +494,12 @@ def execute(task_id: int) -> bool:
                     else:
                         n = ai.fill_arc_summaries(novel, on_stage, raise_errors=True)
                         on_stage("done", f"已补齐 {n} 段分段总结" if n else "没有需要补齐的分段总结")
+                elif task.task_type == "drama_plan":
+                    from app.services import drama
+                    drama.plan(ai, novel, task, on_stage)
+                elif task.task_type in ("drama_script", "drama_storyboard"):
+                    from app.services import drama
+                    drama.run_episodes(ai, novel, task, on_delta, on_stage)
                 else:
                     raise RuntimeError("未知任务类型: " + task.task_type)
 

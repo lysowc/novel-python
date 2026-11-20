@@ -5,7 +5,7 @@ import type {
   ChapterRead, ConsistencyReport, Dashboard, HomeData, Idea, IdeaMessage,
   LoginResult, Memory, Novel, NovelDetail, NovelSetting, PageResult, Prompt,
   SystemConfig, TaskType, UsageStats, NovelAutomation, OperationLog, OutlineStatus,
-  StoryBible, CharacterProfile, StoryTerm, ArcSummary, AiLogDetail,
+  StoryBible, CharacterProfile, StoryTerm, ArcSummary, AiLogDetail, DramaEpisode, DramaOverview,
 } from '@/types/api'
 import { http, withQuery } from './http'
 import { readStream, type StreamHandlers } from './sse'
@@ -557,4 +557,26 @@ export function batchDeleteTerms(novelId: number | string, ids: number[]) {
 
 export function clearAiBible(novelId: number | string, target: 'profiles' | 'terms' | 'all') {
   return http.post<{ profiles: number; terms: number }>(`/admin/novels/${novelId}/bible/clear-ai`, { target })
+}
+
+// ============ 短剧 ============
+
+export function fetchDrama(novelId: number | string) {
+  return http.get<DramaOverview>(`/admin/novels/${novelId}/drama`)
+}
+
+export function fetchDramaEpisode(id: number) {
+  return http.get<DramaEpisode>(`/admin/drama/episodes/${id}`)
+}
+
+export function updateDramaEpisode(id: number, body: Partial<Pick<DramaEpisode, 'title' | 'summary' | 'hook' | 'cliffhanger' | 'script'>>) {
+  return http.put<DramaEpisode>(`/admin/drama/episodes/${id}`, body)
+}
+
+export function batchDeleteDrama(novelId: number | string, ids: number[]) {
+  return http.post<{ deleted: number }>(`/admin/novels/${novelId}/drama/batch-delete`, { ids })
+}
+
+export function clearDrama(novelId: number | string) {
+  return http.post<{ deleted: number }>(`/admin/novels/${novelId}/drama/clear`)
 }

@@ -26,6 +26,7 @@ const taskTypeLabel: Record<string, string> = {
   continue_chapter: '续写章节', regenerate_chapter: '重新生成', generate_summary: '生成摘要',
   update_memory: '更新记忆', rebuild_memory: '重建记忆', extend_outline: '续写大纲', idea_chat: '点子聊天', idea_save: '点子保存', idea_extract: '提炼点子',
   consistency_check: '一致性审校', arc_summary: '分段总结', outline_sync: '大纲校准', quality_check: '质量检查',
+  drama_plan: '短剧分集', drama_script: '短剧剧本', drama_storyboard: '短剧分镜',
 }
 const reasoningLabel: Record<string, string> = { none: '不思考', low: '轻度', high: '深度', max: '最深' }
 

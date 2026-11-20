@@ -42,6 +42,7 @@ CONFIG_KEYS = {
     "outline_sync_enabled": "每章写完按实际内容校准后续大纲",
     "outline_lookahead": "写每章时告诉 AI 后面几章的安排（防止提前写掉）",
     "pacing_check_enabled": "写完每章检查是否抢写后面章节的情节，抢写了自动重写一次",
+    "drama_episode_seconds": "短剧每集正片时长（秒）",
     "style_hints_enabled": "写每章前统计最近几章的重复写法并提醒 AI",
     "ai_temperature_auxiliary": "摘要/记忆/审校等辅助任务的温度",
     "reasoning_writing": "写作时的思考强度（none/low/high/max）",
@@ -63,7 +64,7 @@ CONFIG_DEFAULTS = {
     "arc_summary_size": "20", "repetition_check_enabled": "1",
     "reasoning_writing": "none", "reasoning_auxiliary": "none", "reasoning_review": "low",
     "outline_sync_enabled": "1", "ai_temperature_auxiliary": "1.0", "style_hints_enabled": "1",
-    "outline_lookahead": "3", "pacing_check_enabled": "1",
+    "outline_lookahead": "3", "pacing_check_enabled": "1", "drama_episode_seconds": "90",
 }
 
 

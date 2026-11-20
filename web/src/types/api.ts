@@ -176,6 +176,9 @@ export type PromptType =
   | 'consistency_check'
   | 'memory_patch'
   | 'arc_summary'
+  | 'drama_plan'
+  | 'drama_script'
+  | 'drama_storyboard'
 
 export interface Prompt {
   id: number
@@ -200,6 +203,9 @@ export type TaskType =
   | 'extend_outline'
   | 'consistency_check'
   | 'arc_summary'
+  | 'drama_plan'
+  | 'drama_script'
+  | 'drama_storyboard'
 
 export interface AiTask {
   id: number
@@ -496,4 +502,47 @@ export interface StoryBible {
   arcs: ArcSummary[]
   arc_size: number
   missing_arcs: { start_no: number; end_no: number }[]
+}
+
+// ============ 短剧 ============
+
+export interface DramaShot {
+  no: number
+  scene: string
+  shot: string
+  camera: string
+  duration: number
+  visual: string
+  characters: string[]
+  line: string
+  sound: string
+  subtitle: string
+}
+
+export interface DramaEpisode {
+  id: number
+  episode_no: number
+  title: string
+  chapter_from: number
+  chapter_to: number
+  summary: string
+  hook: string
+  cliffhanger: string
+  has_script: boolean
+  script_words: number
+  shot_count: number
+  duration: number
+  source_changed: boolean
+  script_at: string
+  storyboard_at: string
+  updated_at: string
+  script?: string
+  storyboard?: DramaShot[]
+}
+
+export interface DramaOverview {
+  episodes: DramaEpisode[]
+  covered_until: number
+  written_until: number
+  episode_seconds: number
 }

@@ -76,6 +76,7 @@ class FakeClient:
     calls: list = []          # (task_type, system, user) 记录非流式调用
     pacing: list = []         # 节奏检查依次返回的结果（dict），用完后默认没抢写
     outline_inputs: dict = {}
+    drama_inputs: dict = {}   # 集号 → 写剧本时 AI 收到的输入
 
     def __init__(self, db=None, novel_id=0):
         self.novel_id = novel_id
@@ -83,6 +84,13 @@ class FakeClient:
 
     def chat_stream(self, messages, options, on_delta=None, on_stage=None):
         user = messages[1]["content"]
+        if options.get("task_type") == "drama_script":
+            ep = int(re.search(r"请写第(\d+)集的剧本", user).group(1))
+            FakeClient.drama_inputs[ep] = user
+            text = f"剧本ep{ep}\n沈渡：" + "台词" * 700
+            if on_delta:
+                on_delta(text)
+            return {"text": text, "finish_reason": "stop"}
         no = int(re.search(r"【本章大纲】\n第(\d+)章", user).group(1))
         FakeClient.contexts[no] = user
         if FakeClient.stream_hook:
@@ -100,6 +108,17 @@ class FakeClient:
             raise RuntimeError("AI 请求失败: timeout")
         user = messages[-1]["content"]
         FakeClient.calls.append((kind, messages[0]["content"], user))
+        if kind == "drama_plan":
+            lo, hi = map(int, re.search(r"【这次要改编的章节：第(\d+)-(\d+)章】", user).groups())
+            return {"text": json.dumps({"episodes": [
+                {"title": f"集{n}", "chapters": [n, n], "summary": f"梗概{n}", "hook": "钩", "cliffhanger": "悬"}
+                for n in range(lo, hi + 1)]}, ensure_ascii=False)}
+        if kind == "drama_storyboard":
+            return {"text": json.dumps({"shots": [
+                {"scene": "场1", "shot": "近景", "duration": 40, "visual": "沈渡靠车", "characters": "沈渡、温以宁",
+                 "line": "沈渡：这女人我要定了"},
+                {"scene": "场1", "shot": "特写", "duration": "x", "visual": "", "line": ""},  # 空镜头丢掉
+                {"scene": "场1", "shot": "中景", "duration": 2, "visual": "温以宁按喇叭"}]}, ensure_ascii=False)}
         if kind == "pacing_check":
             data = FakeClient.pacing.pop(0) if FakeClient.pacing else {"ahead": []}
             return {"text": json.dumps(data, ensure_ascii=False)}
@@ -150,6 +169,7 @@ def fake_ai(monkeypatch):
     FakeClient.outline_sync = {}
     FakeClient.calls = []
     FakeClient.pacing = []
+    FakeClient.drama_inputs = {}
     FakeClient.outline_inputs = {}
     monkeypatch.setattr(ai_service, "AiClient", FakeClient)
     return FakeClient

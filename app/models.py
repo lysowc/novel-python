@@ -278,6 +278,9 @@ class AiTask(Base):
         "rebuild_memory": "重建记忆",
         "extend_outline": "续写大纲",
         "arc_summary": "分段总结",
+        "drama_plan": "短剧分集",
+        "drama_script": "短剧剧本",
+        "drama_storyboard": "短剧分镜",
     }
 
     @property
@@ -413,5 +416,26 @@ class ArcSummary(Base):
     start_no = Column(Integer, nullable=False)
     end_no = Column(Integer, nullable=False)
     content = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class DramaEpisode(Base):
+    """短剧分集：从已写章节改编。先有分集方案（标题/对应章节/梗概/钩子），再写剧本、出分镜"""
+    __tablename__ = "drama_episode"
+    __table_args__ = (UniqueConstraint("novel_id", "episode_no", name="uniq_novel_episode"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    novel_id = Column(Integer, nullable=False)
+    episode_no = Column(Integer, nullable=False)
+    title = Column(String(255), nullable=False, default="")
+    chapter_from = Column(Integer, nullable=False, default=0)
+    chapter_to = Column(Integer, nullable=False, default=0)
+    summary = Column(Text, nullable=True)       # 这一集演什么
+    hook = Column(Text, nullable=True)          # 开头 3 秒
+    cliffhanger = Column(Text, nullable=True)   # 结尾钩子
+    script = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+    script_at = Column(DateTime, nullable=True)
+    storyboard = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)  # JSON：[{no, scene, shot, ...}]
+    storyboard_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)

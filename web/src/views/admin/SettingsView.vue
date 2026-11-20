@@ -47,6 +47,7 @@ const groups: { title: string; fields: Field[] }[] = [
       { key: 'consistency_auto_interval', label: '自动审校间隔（章）', type: 'number', placeholder: '10', hint: '每 N 章自动运行一致性审校（0=关闭）', step: 1 },
       { key: 'style_hints_enabled', label: '文风提醒', type: 'number', placeholder: '1', hint: '1=写每章前自动统计最近 3 章用得太多的词（攥、破折号、没说话等）和开头结尾写法，提醒 AI 换着写，减少 AI 腔；0=关闭', step: 1 },
       { key: 'pacing_check_enabled', label: '节奏检查（防抢写）', type: 'number', placeholder: '1', hint: '1=每章写完先对照后面二十章的大纲检查有没有提前写掉后面的情节，有就自动重写一次（每章多约 ¥0.02，重写时再多一章的费用）；0=关闭', step: 1 },
+      { key: 'drama_episode_seconds', label: '短剧每集时长（秒）', type: 'number', placeholder: '90', hint: '改编短剧时每集正片大约多少秒，分集、剧本台词量、分镜总时长都按这个来（30～600）', step: 10 },
       { key: 'outline_lookahead', label: '告诉 AI 后面几章的安排', type: 'number', placeholder: '3', hint: '写每章时把后面 N 章的大纲也给 AI，并说明这些留给后面写，避免它一章写掉好几章的内容；0=关闭', step: 1 },
       { key: 'outline_sync_enabled', label: '每章写完校准后续大纲', type: 'number', placeholder: '1', hint: '1=AI 写偏了大纲（改了谁死谁活、证据去向等）时，自动把后面几章大纲改到能接上，避免越写越乱；0=关闭', step: 1 },
       { key: 'arc_summary_size', label: '分段总结间隔（章）', type: 'number', placeholder: '20', hint: '每写满 N 章自动生成一段前情总结，长篇写到后面也不会忘掉早期剧情（0=关闭）', step: 1 },

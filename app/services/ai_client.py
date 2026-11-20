@@ -93,7 +93,8 @@ def default_target(db: Session) -> tuple[AiProvider, AiModel] | None:
 
 # 辅助类调用（摘要、记忆、审校、质量检查）可以走更便宜的模型；其余（正文、设定、大纲、点子聊天）走写作模型
 AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "consistency_check", "quality_check",
-                        "arc_summary", "outline_sync", "idea_extract", "idea_decisions", "pacing_check"}
+                        "arc_summary", "outline_sync", "idea_extract", "idea_decisions", "pacing_check",
+                        "drama_plan", "drama_storyboard"}
 
 
 # 思考强度（DeepSeek 的 reasoning_effort：none 关闭思考 / low / high / max）。
@@ -101,12 +102,14 @@ AUXILIARY_TASK_TYPES = {"generate_summary", "update_memory", "rebuild_memory", "
 REASONING_KEYS = {"writing": "reasoning_writing", "auxiliary": "reasoning_auxiliary", "review": "reasoning_review"}
 REASONING_DEFAULTS = {"reasoning_writing": "none", "reasoning_auxiliary": "none", "reasoning_review": "low"}
 REASONING_VALUES = ("none", "low", "high", "max")
-REVIEW_TASK_TYPES = {"consistency_check", "outline_sync", "idea_extract", "idea_decisions", "pacing_check"}  # 需要一点推理：找矛盾、调整后续大纲
+REVIEW_TASK_TYPES = {"consistency_check", "outline_sync", "idea_extract", "idea_decisions", "pacing_check",
+                     "drama_plan"}  # 需要一点推理：找矛盾、调整后续大纲
 
 
 # 要求返回 JSON 的任务：DeepSeek 打开 JSON 输出模式（response_format=json_object），保证返回合法 JSON
 JSON_TASK_TYPES = {"generate_outline", "extend_outline", "update_memory", "outline_sync", "consistency_check",
-                   "idea_decisions", "idea_extract", "idea_save", "pacing_check"}
+                   "idea_decisions", "idea_extract", "idea_save", "pacing_check",
+                   "drama_plan", "drama_storyboard"}
 
 
 def reasoning_level(db: Session, task_type: str) -> str:
